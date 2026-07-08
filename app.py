@@ -1,9 +1,9 @@
 import streamlit as st
 
 # Configuration de la page
-st.set_page_config(page_title="Calculateur de Paie Variable", page_icon="💰", layout="centered")
+st.set_page_config(page_title="Calculateur de Commissions", page_icon="💶", layout="centered")
 
-# --- MOTEURS DE CALCUL (LOGIQUE MÉTIER) ---
+# --- MOTEURS DE CALCUL (LOGIQUE MÉTIER REVISITÉE) ---
 def calcul_standard(tr):
     if tr < 0.50: return tr * 0.40
     elif tr < 0.90: return tr * tr * 0.80
@@ -52,64 +52,67 @@ def calcul_inside_sales(tr):
     elif tr < 1.10: return tr * 1.15
     elif tr < 1.30: return tr * 1.30
     elif tr < 1.39: return tr * 1.35
-    elif tr < 1.50: return tr * 1.40
+    elif tr < 1.40: return tr * 1.40 # Correction mineure par rapport à la borne 1.50
     elif tr < 1.72: return tr * 1.50
     else: return 2.50
 
-# --- INTERFACE GRAPHIQUE (FRONT-END) ---
-st.title("💰 Simulateur de Paie Variable")
-st.write("Sélectionnez votre profil et saisissez votre performance pour simuler votre taux d'atteinte.")
+# --- INTERFACE FRONTIÈRE ---
+st.title("💶 Calculateur de Paie Variable")
+st.write("Saisissez l'objectif, le réalisé et le montant cible pour obtenir le montant de la prime.")
 
 st.divider()
 
-# Création de deux colonnes pour le formulaire
-col1, col2 = st.columns(2)
-
-with col1:
-    courbe_selectionnee = st.selectbox(
-        "1. Type de Courbe / Profil",
-        ["Standard", "Manager", "Manager IS", "Inside Sales"]
-    )
-
-with col2:
-    # Saisie en pourcentage (ex: 95.5)
-    tr_saisi = st.number_input(
-        "2. Taux de Performance (TR en %)",
-        min_value=0.0,
-        max_value=500.0,
-        value=100.0,
-        step=1.0,
-        help="Entrez votre performance. Exemple : 105 pour 105%"
-    )
-
-# Conversion du pourcentage saisi en valeur décimale pour le calcul
-tr_decimal = tr_saisi / 100.0
-
-# Calcul dynamique selon la courbe choisie
-if courbe_selectionnee == "Standard":
-    resultat = calcul_standard(tr_decimal)
-elif courbe_selectionnee == "Manager":
-    resultat = calcul_manager(tr_decimal)
-elif courbe_selectionnee == "Manager IS":
-    resultat = calcul_manager_is(tr_decimal)
-elif courbe_selectionnee == "Inside Sales":
-    resultat = calcul_inside_sales(tr_decimal)
-
-st.divider()
-
-# --- AFFICHAGE DU RÉSULTAT ---
-st.subheader("🎯 Résultat du calcul")
-
-# Affichage sous forme de "Card" métrique
-st.metric(
-    label=f"Taux d'Atteinte Final ({courbe_selectionnee})",
-    value=f"{resultat:.2%}"
+# Section 1 : Configuration du profil
+courbe_selectionnee = st.selectbox(
+    "📊 Choix du profil de courbe",
+    ["Standard", "Manager", "Manager IS", "Inside Sales"]
 )
 
-# Petit message d'explication contextuel
-if resultat == 0.0:
-    st.error("⚠️ Vous êtes en dessous du seuil minimum de déclenchement (0%).")
-elif tr_decimal >= 1.0:
-    st.success("🚀 Félicitations, les objectifs sont atteints ou dépassés !")
+st.subheader("🔢 Données de Performance")
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    objectif = st.number_input("Objectif (Chiffre)", min_value=1.0, value=10000.0, step=100.0)
+with col2:
+    realise = st.number_input("Réalisation (Chiffre)", min_value=0.0, value=9500.0, step=100.0)
+with col3:
+    prime_target = st.number_input("Prime Target à 100% (€)", min_value=0.0, value=2000.0, step=50.0)
+
+# --- CALCULS INTERNES ---
+# 1. Calcul du TR automatique
+tr_decimal = realise / objectif
+
+# 2. Application de la courbe pour trouver le taux d'atteinte
+if courbe_selectionnee == "Standard":
+    taux_atteinte = calcul_standard(tr_decimal)
+elif courbe_selectionnee == "Manager":
+    taux_atteinte = calcul_manager(tr_decimal)
+elif courbe_selectionnee == "Manager IS":
+    taux_atteinte = calcul_manager_is(tr_decimal)
+elif courbe_selectionnee == "Inside Sales":
+    taux_atteinte = calcul_inside_sales(tr_decimal)
+
+# 3. Calcul du variable final
+variable_final = prime_target * taux_atteinte
+
+st.divider()
+
+# --- PANNEAU DES RÉSULTATS (KPIs) ---
+st.subheader("🎯 Résultats du Calcul")
+
+c1, c2, c3 = st.columns(3)
+with c1:
+    st.metric(label="Taux de Performance (TR)", value=f"{tr_decimal:.2%}")
+with c2:
+    st.metric(label="Taux d'Atteinte Final", value=f"{taux_atteinte:.2%}")
+with c3:
+    st.metric(label="Variable à Verser", value=f"{variable_final:,.2f} €")
+
+# Messages d'alerte et de contexte RH
+if tr_decimal < 1.0:
+    st.warning(f"Performance en dessous de l'objectif ({tr_decimal:.1%}). Prime partiellement débloquée.")
+elif tr_decimal == 1.0:
+    st.success("Objectif exactement atteint. 100% de la prime versée.")
 else:
-    st.info("📉 Objectifs partiellement atteints.")
+    st.balloons()
+    st.success(f"Surperformance ({tr_decimal:.1%}) ! Application des accélérateurs.")
