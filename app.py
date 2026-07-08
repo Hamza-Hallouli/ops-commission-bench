@@ -1,11 +1,10 @@
 import streamlit as st
 import pandas as pd
 import io
-from datetime import datetime
 
 # Configuration de la page
 st.set_page_config(
-    page_title="Ops Variable & Forecast Hub", 
+    page_title="Ops Compensation Intelligence", 
     page_icon="💎", 
     layout="wide",
     initial_sidebar_state="collapsed"
@@ -86,9 +85,9 @@ def calcul_inside_sales(tr):
 
 def calculer_ligne(row):
     try:
-        obj = float(row['Objectif Mensuel'])
-        real = float(row['Réalisation Mensuelle'])
-        target = float(row['Prime Target Mensuelle'])
+        obj = float(row['Objectif'])
+        real = float(row['Réalisation'])
+        target = float(row['Prime Target 100%'])
         courbe = str(row['Courbe']).strip()
         if obj <= 0: return 0.0, 0.0, 0.0
         tr = real / obj
@@ -105,175 +104,123 @@ def calculer_ligne(row):
         return 0.0, 0.0, 0.0
 
 # --- HEADER PREMIUM ---
-st.markdown("<h1 style='text-align: center; color: #1E293B; margin-bottom: 5px;'>💎 Ops Variable & Forecast Hub</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: #64748B; font-size: 1.1rem;'>Calculez le mois en cours et anticipez les budgets de fin d'année.</p>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center; color: #1E293B; margin-bottom: 5px;'>💎 Ops Compensation Intelligence</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: #64748B; font-size: 1.1rem;'>La puissance des données alliée au confort visuel des équipes RH.</p>", unsafe_allow_html=True)
 st.write("")
 
-onglet_masse, onglet_unitaire = st.tabs(["📁 Traitement Global & Forecast", "👤 Estimateur Individuel"])
+# --- INTERFACE ---
+st.markdown("### 🛠️ 1. Préparation & Import de l'historique")
+col_l, col_r = st.columns([1, 2], gap="large")
 
-# --- ONGLET 1 : CALCUL EN MASSE & PROJECTION ---
-with onglet_masse:
-    col_left, col_right = st.columns([1, 2], gap="large")
-    
-    with col_left:
-        st.markdown("### 🛠️ Étape 1 : Préparation")
-        st.caption("Notre nouveau modèle intègre la notion de 'Mois' pour générer automatiquement l'atterrissage budgétaire de fin d'année.")
+with col_l:
+    # Génération du template idéal multi-mois
+    template_data = {
+        "Nom": ["Dupont", "Dupont", "Martin"],
+        "Prénom": ["Jean", "Jean", "Sophie"],
+        "Mois (1 à 12)": [1, 2, 1],
+        "Courbe": ["Standard", "Standard", "Inside Sales"],
+        "Objectif": [10000, 10000, 50000],
+        "Réalisation": [9500, 11500, 52000],
+        "Prime Target 100%": [2000, 2000, 3500]
+    }
+    df_template = pd.DataFrame(template_data)
+    buffer_template = io.BytesIO()
+    with pd.ExcelWriter(buffer_template, engine='xlsxwriter') as writer:
+        df_template.to_excel(writer, index=False, sheet_name='Historique')
         
-        # Modèle de données mis à jour avec le mois courant (ex: 6 pour Juin)
-        template_data = {
-            "Nom": ["Dupont", "Martin"], "Prénom": ["Jean", "Sophie"], "Mois (Nombre de 1 à 12)": [6, 6],
-            "Courbe": ["Standard", "Inside Sales"], "Objectif Mensuel": [10000, 50000],
-            "Réalisation Mensuelle": [9500, 52000], "Prime Target Mensuelle": [2000, 3500]
-        }
-        df_template = pd.DataFrame(template_data)
-        buffer_template = io.BytesIO()
-        with pd.ExcelWriter(buffer_template, engine='xlsxwriter') as writer:
-            df_template.to_excel(writer, index=False, sheet_name='Data')
+    st.download_button(
+        label="📥 Télécharger la matrice d'historique Excel",
+        data=buffer_template.getvalue(),
+        file_name="matrice_historique_variable.xlsx",
+        mime="application/vnd.ms-excel",
+        use_container_width=True
+    )
+    st.caption("💡 **Astuce :** Vous pouvez mettre plusieurs mois pour le même collaborateur à la suite (Ex: Dupont en mois 1, puis Dupont en mois 2).")
+
+with col_r:
+    uploaded_file = st.file_uploader("Glissez-déposez le fichier Excel de votre équipe", type=["xlsx", "xls"], label_visibility="collapsed")
+
+if uploaded_file is not None:
+    try:
+        df_raw = pd.read_excel(uploaded_file)
+        df_raw.columns = [c.strip() for c in df_raw.columns]
+        
+        # Identification automatique de la colonne mois
+        col_m = [c for c in df_raw.columns if "Mois" in c][0]
+        
+        # Calcul de chaque ligne via notre moteur
+        resultats = df_raw.apply(calculer_ligne, axis=1)
+        df_raw['TR'] = [r[0] for r in resultats]
+        df_raw['Atteinte'] = [r[1] for r in resultats]
+        df_raw['À Verser (€)'] = [r[2] for r in resultats]
+        
+        # --- CALCUL DU FORECAST ---
+        dernier_mois = int(df_raw[col_m].max())
+        mois_restants = max(0, 12 - dernier_mois)
+        
+        st.divider()
+        st.markdown(f"### 📈 2. Synthèse Globale (YTD & Forecast à Fin Mois {dernier_mois})")
+        
+        # Agrégation par collaborateur pour les statistiques annuelles
+        df_collaboration = df_raw.groupby(['Nom', 'Prénom', 'Courbe', 'Prime Target 100%']).agg({
+            'À Verser (€)': 'sum',
+            'TR': 'mean'
+        }).reset_index()
+        
+        # Projection
+        df_collaboration["Projection Annuelle Établie (€)"] = df_collaboration['À Verser (€)'] + (mois_restants * (df_collaboration['Prime Target 100%'] * (df_collaboration['À Verser (€)'] / (df_collaboration['Prime Target 100%'] * dernier_mois))))
+        
+        # Métriques macro
+        total_deja_verse = df_collaboration['À Verser (€)'].sum()
+        total_atterrissage_an = df_collaboration["Projection Annuelle Établie (€)"].sum()
+        
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Mois Max Détecté", f"Mois {dernier_mois} / 12")
+        k2.metric("Cumul Déjà Versé (YTD)", f"{total_deja_verse:,.2f} €")
+        k3.metric("Atterrissage Budgétaire Annuel", f"{total_atterrissage_an:,.2f} €")
+        
+        # --- 🔄 LA MAGIE DU PIVOT HORIZONTAL ---
+        st.write("")
+        st.markdown("### 📋 Vue Frise Chronologique Horizontale (Suivi des Primes par Mois)")
+        
+        # Création du tableau horizontal des versements par mois
+        df_pivot = df_raw.pivot_table(
+            index=['Nom', 'Prénom', 'Courbe'],
+            columns=col_m,
+            values='À Verser (€)',
+            aggfunc='sum'
+        ).fillna(0)
+        
+        # Renommer les colonnes de mois (1 -> Janvier, etc. ou M1)
+        df_pivot.columns = [f"Mois {int(c)} (€)" for c in df_pivot.columns]
+        df_pivot = df_pivot.reset_index()
+        
+        # Fusionner avec les totaux et projections
+        df_final_horizontal = pd.merge(df_pivot, df_collaboration[['Nom', 'Prénom', 'À Verser (€)', "Projection Annuelle Établie (€)"]], on=['Nom', 'Prénom'])
+        df_final_horizontal = df_final_horizontal.rename(columns={'À Verser (€)': 'Total Cumulé YTD (€)'})
+        
+        # Formatage des données pour un rendu Lux
+        format_dict = {col: '{:,.2f} €' for col in df_final_horizontal.columns if 'Mois' in col or '€' in col}
+        
+        st.dataframe(
+            df_final_horizontal.style.format(format_dict).background_gradient(cmap="Blues", subset=[c for c in df_final_horizontal.columns if 'Mois' in c]),
+            use_container_width=True
+        )
+        
+        # --- BOUTON EXPORT ---
+        buffer_export = io.BytesIO()
+        with pd.ExcelWriter(buffer_export, engine='xlsxwriter') as writer:
+            df_final_horizontal.to_excel(writer, index=False, sheet_name='Suivi_Horizontal')
+            df_raw.to_excel(writer, index=False, sheet_name='Donnees_Brutes_Calcules')
             
+        st.write("")
         st.download_button(
-            label="📥 Télécharger le modèle Excel (Mois + Forecast)",
-            data=buffer_template.getvalue(),
-            file_name="modele_saisie_forecast.xlsx",
+            label="🟢 Télécharger le Grand Livre de Paie Horizontal (Excel)",
+            data=buffer_export.getvalue(),
+            file_name="suivi_horizontal_paie_variable.xlsx",
             mime="application/vnd.ms-excel",
             use_container_width=True
         )
-
-        # Choix de la méthode de prévision
-        st.write("")
-        st.markdown("### 🔮 Méthode de Projection")
-        methode_forecast = st.radio(
-            "Hypothèse pour les mois restants :",
-            ["Conserver la performance actuelle (Run Rate)", "Atteindre 100% des objectifs futurs (Budget)"]
-        )
-
-    with col_right:
-        st.markdown("### 📤 Étape 2 : Import & Atterrissage")
-        uploaded_file = st.file_uploader("Glissez-déposez votre fichier d'équipe ici", type=["xlsx", "xls"], label_visibility="collapsed")
         
-        if uploaded_file is not None:
-            with St.spinner("Calcul et projections en cours..."):
-                try:
-                    df_input = pd.read_excel(uploaded_file)
-                    
-                    # Renommer dynamiquement si les titres varient légèrement
-                    df_input.columns = [c.strip() for c in df_input.columns]
-                    col_mois = [c for c in df_input.columns if "Mois" in c][0]
-                    
-                    # Alignement des noms de colonnes pour le moteur
-                    df_moteur = df_input.rename(columns={
-                        "Objectif Mensuel": "Objectif",
-                        "Réalisation Mensuelle": "Réalisation",
-                        "Prime Target Mensuelle": "Prime Target 100%"
-                    })
-                    
-                    resultats = df_moteur.apply(calculer_ligne, axis=1)
-                    
-                    # Injection des résultats du mois en cours
-                    df_input['TR Mois en Cours'] = [r[0] for r in resultats]
-                    df_input["Atteinte Mois en Cours"] = [r[1] for r in resultats]
-                    df_input["À Verser (Ce Mois-ci)"] = [r[2] for r in resultats]
-                    
-                    # --- LOGIQUE DU FORECAST (PRÉVISION FIN D'ANNÉE) ---
-                    projections_annee = []
-                    for idx, row in df_input.iterrows():
-                        m_actuel = int(row[col_mois])
-                        m_restants = max(0, 12 - m_actuel)
-                        
-                        deja_paye = row["À Verser (Ce Mois-ci)"] * m_actuel # Estimation cumulée passée
-                        target_mensuelle = row["Prime Target Mensuelle"]
-                        courbe = str(row['Courbe']).strip()
-                        
-                        if methode_forecast == "Conserver la performance actuelle (Run Rate)":
-                            atteinte_future = row["Atteinte Mois en Cours"]
-                        else: # Hypothèse objectif atteint à 100%
-                            atteinte_future = 1.0
-                            
-                        reste_a_payer_estime = m_restants * (target_mensuelle * atteinte_future)
-                        projection_totale_annee = deja_paye + reste_a_payer_estime
-                        projections_annee.append(projection_totale_annee)
-                        
-                    df_input["Estimation Fin d'Année (Total)"] = projections_annee
-                    
-                    # --- AFFICHAGE DE LA SYNTHÈSE LUX ---
-                    st.toast("Analyses prévisionnelles prêtes !", icon="📈")
-                    st.write("")
-                    
-                    total_ce_mois = df_input["À Verser (Ce Mois-ci)"].sum()
-                    total_estime_annee = df_input["Estimation Fin d'Année (Total)"].sum()
-                    
-                    kpi1, kpi2 = st.columns(2)
-                    kpi1.metric("Budget Global Ce Mois-ci", f"{total_ce_mois:,.2f} €")
-                    kpi2.metric("Atterrissage Budgétaire Annuel Estimé", f"{total_estime_annee:,.2f} €", help="Cumul du passé réel + projection du futur.")
-                    
-                    st.write("")
-                    st.markdown("### 📋 Tableau de Bord Équipe")
-                    
-                    # Affichage propre du tableau complet
-                    st.dataframe(
-                        df_input.style.format({
-                            'Objectif Mensuel': '{:,.0f} €',
-                            'Réalisation Mensuelle': '{:,.0f} €',
-                            'Prime Target Mensuelle': '{:,.0f} €',
-                            'TR Mois en Cours': '{:.2%}',
-                            'Atteinte Mois en Cours': '{:.2%}',
-                            'À Verser (Ce Mois-ci)': '{:,.2f} €',
-                            "Estimation Fin d'Année (Total)": '{:,.2f} €'
-                        }),
-                        use_container_width=True
-                    )
-                    
-                    # Export du rapport enrichi
-                    buffer_output = io.BytesIO()
-                    with pd.ExcelWriter(buffer_output, engine='xlsxwriter') as writer:
-                        df_input.to_excel(writer, index=False, sheet_name='Resultats_Et_Forecast')
-                        
-                    st.write("")
-                    st.download_button(
-                        label="🟢 Télécharger le Rapport Financier Global (Excel)",
-                        data=buffer_output.getvalue(),
-                        file_name="rapport_paie_et_forecast.xlsx",
-                        mime="application/vnd.ms-excel",
-                        use_container_width=True
-                    )
-                    
-                except Exception as e:
-                    st.error(f"Une erreur est survenue lors de l'analyse : {e}")
-
-# --- ONGLET 2 : ESTIMATEUR INDIVIDUEL ---
-with onglet_unitaire:
-    st.markdown("### 👤 Modélisation Individuelle Prévisonnelle")
-    col_u1, col_u2 = st.columns([1, 1], gap="large")
-    
-    with col_u1:
-        c_selected = st.selectbox("Sélectionner la courbe", ["Standard", "Manager", "Manager IS", "Inside Sales"])
-        mois_select = st.slider("Mois en cours de calcul", 1, 12, 6)
-        obj = st.number_input("Objectif Mensuel (€)", min_value=1.0, value=10000.0)
-        real = st.number_input("Réalisation Mensuelle (€)", min_value=0.0, value=9500.0)
-        target = st.number_input("Prime Mensuelle Target (€)", min_value=0.0, value=2000.0)
-        
-        tr = real / obj
-        if c_selected == "Standard": att = calcul_standard(tr)
-        elif c_selected == "Manager": att = calcul_manager(tr)
-        elif c_selected == "Manager IS": att = calcul_manager_is(tr)
-        else: att = calcul_inside_sales(tr)
-        
-        prime_ce_mois = target * att
-        mois_restants = 12 - mois_select
-        
-    with col_u2:
-        st.write("")
-        # Mode Run Rate automatique en unitaire
-        total_annuel_estime = (prime_ce_mois * mois_select) + (mois_restants * prime_ce_mois)
-        
-        st.markdown(f"""
-        <div class='metric-container'>
-            <p style='color: #64748B; margin-bottom: 5px; font-size: 0.9rem; text-transform: uppercase;'>À Verser Ce Mois-ci</p>
-            <h1 style='color: #4F46E5; margin: 0 0 15px 0; font-size: 2.3rem;'>{prime_ce_mois:,.2f} €</h1>
-            
-            <p style='color: #64748B; margin-bottom: 5px; font-size: 0.9rem; text-transform: uppercase;'>Projection Gains Annuels (Run Rate)</p>
-            <h2 style='color: #10B981; margin: 0; font-size: 2rem;'>{total_annuel_estime:,.2f} €</h2>
-            <hr style='border: 0; border-top: 1px solid #e9ecef; margin: 15px 0;'>
-            <p style='margin: 5px 0; color: #334155;'><b>Performance courante :</b> {tr:.2%}</p>
-            <p style='margin: 5px 0; color: #334155;'><b>Mois restants projetés :</b> {mois_restants} mois</p>
-        </div>
-        """, unsafe_allow_html=True)
+    except Exception as e:
+        st.error(f"Erreur d'analyse. Assurez-vous que le fichier respecte le modèle. Détails : {e}")
