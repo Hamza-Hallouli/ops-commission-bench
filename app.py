@@ -1,9 +1,10 @@
 import streamlit as st
+import pandas as pd
+import io
 
-# Configuration de la page
-st.set_page_config(page_title="Calculateur de Commissions", page_icon="💶", layout="centered")
+st.set_page_config(page_title="Ops Variable Calculator", page_icon="📊", layout="wide")
 
-# --- MOTEURS DE CALCUL (LOGIQUE MÉTIER REVISITÉE) ---
+# --- MOTEURS DE CALCUL ---
 def calcul_standard(tr):
     if tr < 0.50: return tr * 0.40
     elif tr < 0.90: return tr * tr * 0.80
@@ -52,67 +53,124 @@ def calcul_inside_sales(tr):
     elif tr < 1.10: return tr * 1.15
     elif tr < 1.30: return tr * 1.30
     elif tr < 1.39: return tr * 1.35
-    elif tr < 1.40: return tr * 1.40 # Correction mineure par rapport à la borne 1.50
+    elif tr < 1.50: return tr * 1.40
     elif tr < 1.72: return tr * 1.50
     else: return 2.50
 
-# --- INTERFACE FRONTIÈRE ---
-st.title("💶 Calculateur de Paie Variable")
-st.write("Saisissez l'objectif, le réalisé et le montant cible pour obtenir le montant de la prime.")
+def calculer_ligne(row):
+    try:
+        obj = float(row['Objectif'])
+        real = float(row['Réalisation'])
+        target = float(row['Prime Target 100%'])
+        courbe = str(row['Courbe']).strip()
+        
+        if obj <= 0: return 0.0, 0.0, 0.0
+        
+        tr = real / obj
+        
+        if courbe == "Standard": atteinte = calcul_standard(tr)
+        elif courbe == "Manager": atteinte = calcul_manager(tr)
+        elif courbe == "Manager IS": atteinte = calcul_manager_is(tr)
+        elif courbe == "Inside Sales": atteinte = calcul_inside_sales(tr)
+        else: atteinte = 0.0
+            
+        variable = target * atteinte
+        return tr, atteinte, variable
+    except:
+        return 0.0, 0.0, 0.0
 
-st.divider()
+# --- INTERFACE FRONT-END ---
+st.title("🚀 Hub de Calcul de Paie Variable (Mode Productif)")
+st.write("Gagnez du temps en traitant toute votre équipe d'un coup.")
 
-# Section 1 : Configuration du profil
-courbe_selectionnee = st.selectbox(
-    "📊 Choix du profil de courbe",
-    ["Standard", "Manager", "Manager IS", "Inside Sales"]
-)
+# Création d'onglets pour séparer les usages
+onglet_masse, onglet_unitaire = st.tabs(["📁 Calcul en Masse (Excel)", "👤 Calcul Unitaire (Simulation)"])
 
-st.subheader("🔢 Données de Performance")
-col1, col2, col3 = st.columns(3)
+with onglet_masse:
+    st.subheader("1. Téléchargez le masque de saisie officiel")
+    
+    # Création du template de base
+    template_data = {
+        "Nom": ["Dupont", "Martin"],
+        "Prénom": ["Jean", "Sophie"],
+        "Courbe": ["Standard", "Inside Sales"],
+        "Objectif": [10000, 50000],
+        "Réalisation": [9500, 52000],
+        "Prime Target 100%": [2000, 3500]
+    }
+    df_template = pd.DataFrame(template_data)
+    
+    # Bouton de téléchargement du masque
+    buffer_template = io.BytesIO()
+    with pd.ExcelWriter(buffer_template, engine='xlsxwriter') as writer:
+        df_template.to_excel(writer, index=False, sheet_name='Data_A_Remplir')
+    
+    st.download_button(
+        label="📥 Télécharger le modèle de masque Excel",
+        data=buffer_template.getvalue(),
+        file_name="masque_saisie_variable.xlsx",
+        mime="application/vnd.ms-excel"
+    )
+    
+    st.info("💡 **Conseil :** Remplissez ce fichier avec vos 20 collaborateurs. Les valeurs valides pour la colonne 'Courbe' sont : *Standard*, *Manager*, *Manager IS*, *Inside Sales*.")
 
-with col1:
-    objectif = st.number_input("Objectif (Chiffre)", min_value=1.0, value=10000.0, step=100.0)
-with col2:
-    realise = st.number_input("Réalisation (Chiffre)", min_value=0.0, value=9500.0, step=100.0)
-with col3:
-    prime_target = st.number_input("Prime Target à 100% (€)", min_value=0.0, value=2000.0, step=50.0)
+    st.divider()
+    st.subheader("2. Déposez votre fichier complété")
+    
+    uploaded_file = st.file_uploader("Glissez le fichier Excel ici", type=["xlsx", "xls"])
+    
+    if uploaded_file is not None:
+        try:
+            df_input = pd.read_excel(uploaded_file)
+            
+            # Application de la logique sur toutes les lignes d'un coup
+            resultats = df_input.apply(calculer_ligne, axis=1)
+            
+            # Décomposition des résultats dans de nouvelles colonnes
+            df_input['Taux Performance (TR)'] = [r[0] for r in resultats]
+            df_input["Taux Atteinte"] = [r[1] for r in resultats]
+            df_input["Variable Final à Verser"] = [r[2] for r in resultats]
+            
+            st.success("✅ Calculs effectués avec succès pour toute l'équipe !")
+            
+            # Affichage du masque de résultat
+            st.subheader("📋 Aperçu des résultats")
+            
+            # Formatage visuel pour l'affichage web
+            df_display = df_input.copy()
+            df_display['Taux Performance (TR)'] = df_display['Taux Performance (TR)'].map('{:.2%}'.format)
+            df_display['Taux Atteinte'] = df_display['Taux Atteinte'].map('{:.2%}'.format)
+            df_display['Variable Final à Verser'] = df_display['Variable Final à Verser'].map('{:,.2f} €'.format)
+            
+            st.dataframe(df_display, use_container_width=True)
+            
+            # Export vers le fichier de sortie
+            buffer_output = io.BytesIO()
+            with pd.ExcelWriter(buffer_output, engine='xlsxwriter') as writer:
+                df_input.to_excel(writer, index=False, sheet_name='Resultats_Paie')
+                
+            st.download_button(
+                label="🟢 Télécharger le fichier de Paie Final (Excel)",
+                data=buffer_output.getvalue(),
+                file_name="resultats_paie_variable.xlsx",
+                mime="application/vnd.ms-excel"
+            )
+            
+        except Exception as e:
+            st.error(f"Erreur lors de la lecture du fichier. Vérifiez que les colonnes correspondent exactement au modèle. Erreur : {e}")
 
-# --- CALCULS INTERNES ---
-# 1. Calcul du TR automatique
-tr_decimal = realise / objectif
-
-# 2. Application de la courbe pour trouver le taux d'atteinte
-if courbe_selectionnee == "Standard":
-    taux_atteinte = calcul_standard(tr_decimal)
-elif courbe_selectionnee == "Manager":
-    taux_atteinte = calcul_manager(tr_decimal)
-elif courbe_selectionnee == "Manager IS":
-    taux_atteinte = calcul_manager_is(tr_decimal)
-elif courbe_selectionnee == "Inside Sales":
-    taux_atteinte = calcul_inside_sales(tr_decimal)
-
-# 3. Calcul du variable final
-variable_final = prime_target * taux_atteinte
-
-st.divider()
-
-# --- PANNEAU DES RÉSULTATS (KPIs) ---
-st.subheader("🎯 Résultats du Calcul")
-
-c1, c2, c3 = st.columns(3)
-with c1:
-    st.metric(label="Taux de Performance (TR)", value=f"{tr_decimal:.2%}")
-with c2:
-    st.metric(label="Taux d'Atteinte Final", value=f"{taux_atteinte:.2%}")
-with c3:
-    st.metric(label="Variable à Verser", value=f"{variable_final:,.2f} €")
-
-# Messages d'alerte et de contexte RH
-if tr_decimal < 1.0:
-    st.warning(f"Performance en dessous de l'objectif ({tr_decimal:.1%}). Prime partiellement débloquée.")
-elif tr_decimal == 1.0:
-    st.success("Objectif exactement atteint. 100% de la prime versée.")
-else:
-    st.balloons()
-    st.success(f"Surperformance ({tr_decimal:.1%}) ! Application des accélérateurs.")
+with onglet_unitaire:
+    # Le code précédent reste ici pour faire une simulation rapide si besoin
+    st.subheader("Simuler un profil individuel")
+    c_selected = st.selectbox("Courbe", ["Standard", "Manager", "Manager IS", "Inside Sales"], key="unit_c")
+    obj = st.number_input("Objectif", min_value=1.0, value=10000.0, key="unit_o")
+    real = st.number_input("Réalisation", min_value=0.0, value=9500.0, key="unit_r")
+    target = st.number_input("Target (€)", min_value=0.0, value=2000.0, key="unit_t")
+    
+    tr = real / obj
+    if c_selected == "Standard": att = calcul_standard(tr)
+    elif c_selected == "Manager": att = calcul_manager(tr)
+    elif c_selected == "Manager IS": att = calcul_manager_is(tr)
+    else: att = calcul_inside_sales(tr)
+    
+    st.metric(label="Variable à payer", value=f"{target * att:,.2f} €")
