@@ -2,9 +2,40 @@ import streamlit as st
 import pandas as pd
 import io
 
-st.set_page_config(page_title="Ops Variable Calculator", page_icon="📊", layout="wide")
+# 1. Configuration de la page avec un thème large et moderne
+st.set_page_config(
+    page_title="Ops Variable Hub", 
+    page_icon="💎", 
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
 
-# --- MOTEURS DE CALCUL ---
+# --- STYLE CSS CUSTOM (Pour injecter un look épuré et premium) ---
+st.markdown("""
+    <style>
+    /* Modification de la police globale et des arrondis */
+    html, body, [class*="css"] {
+        font-family: 'Inter', sans-serif;
+    }
+    /* Style pour les cartes de résultats */
+    .metric-container {
+        background-color: #f8f9fa;
+        border: 1px solid #e9ecef;
+        padding: 20px;
+        border-radius: 12px;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.02);
+    }
+    /* Style pour la zone de dépôt de fichier drag & drop */
+    .stFileUploader {
+        border: 2px dashed #4F46E5 !important;
+        border-radius: 12px;
+        padding: 10px;
+        background-color: #FAFAFA;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# --- MOTEURS DE CALCUL (LOGIQUE MÉTIER) ---
 def calcul_standard(tr):
     if tr < 0.50: return tr * 0.40
     elif tr < 0.90: return tr * tr * 0.80
@@ -63,9 +94,7 @@ def calculer_ligne(row):
         real = float(row['Réalisation'])
         target = float(row['Prime Target 100%'])
         courbe = str(row['Courbe']).strip()
-        
         if obj <= 0: return 0.0, 0.0, 0.0
-        
         tr = real / obj
         
         if courbe == "Standard": atteinte = calcul_standard(tr)
@@ -79,98 +108,144 @@ def calculer_ligne(row):
     except:
         return 0.0, 0.0, 0.0
 
-# --- INTERFACE FRONT-END ---
-st.title("🚀 Hub de Calcul de Paie Variable (Mode Productif)")
-st.write("Gagnez du temps en traitant toute votre équipe d'un coup.")
+# --- HEADER PREMIUM ---
+st.markdown("<h1 style='text-align: center; color: #1E293B; margin-bottom: 5px;'>💎 Ops Variable Hub</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: #64748B; font-size: 1.1rem;'>Pilotez et calculez les commissions de vos équipes en toute simplicité.</p>", unsafe_allow_html=True)
+st.write("")
 
-# Création d'onglets pour séparer les usages
-onglet_masse, onglet_unitaire = st.tabs(["📁 Calcul en Masse (Excel)", "👤 Calcul Unitaire (Simulation)"])
+# Onglets épurés
+onglet_masse, onglet_unitaire = st.tabs(["📁 Traitement Global (Excel)", "👤 Estimateur Individuel"])
 
+# --- ONGLET 1 : CALCUL EN MASSE ---
 with onglet_masse:
-    st.subheader("1. Téléchargez le masque de saisie officiel")
+    # Utilisation de colonnes pour structurer les actions de manière élégante
+    col_left, col_right = st.columns([1, 2], gap="large")
     
-    # Création du template de base
-    template_data = {
-        "Nom": ["Dupont", "Martin"],
-        "Prénom": ["Jean", "Sophie"],
-        "Courbe": ["Standard", "Inside Sales"],
-        "Objectif": [10000, 50000],
-        "Réalisation": [9500, 52000],
-        "Prime Target 100%": [2000, 3500]
-    }
-    df_template = pd.DataFrame(template_data)
-    
-    # Bouton de téléchargement du masque
-    buffer_template = io.BytesIO()
-    with pd.ExcelWriter(buffer_template, engine='xlsxwriter') as writer:
-        df_template.to_excel(writer, index=False, sheet_name='Data_A_Remplir')
-    
-    st.download_button(
-        label="📥 Télécharger le modèle de masque Excel",
-        data=buffer_template.getvalue(),
-        file_name="masque_saisie_variable.xlsx",
-        mime="application/vnd.ms-excel"
-    )
-    
-    st.info("💡 **Conseil :** Remplissez ce fichier avec vos 20 collaborateurs. Les valeurs valides pour la colonne 'Courbe' sont : *Standard*, *Manager*, *Manager IS*, *Inside Sales*.")
+    with col_left:
+        st.markdown("### 🛠️ Étape 1 : Préparation")
+        st.caption("Téléchargez notre matrice pré-configurée, complétez-la avec vos données d'équipe, puis déposez-la à droite.")
+        
+        # Génération du template Excel
+        template_data = {
+            "Nom": ["Dupont", "Martin"], "Prénom": ["Jean", "Sophie"],
+            "Courbe": ["Standard", "Inside Sales"], "Objectif": [10000, 50000],
+            "Réalisation": [9500, 52000], "Prime Target 100%": [2000, 3500]
+        }
+        df_template = pd.DataFrame(template_data)
+        buffer_template = io.BytesIO()
+        with pd.ExcelWriter(buffer_template, engine='xlsxwriter') as writer:
+            df_template.to_excel(writer, index=False, sheet_name='Data')
+            
+        st.download_button(
+            label="📥 Télécharger le modèle Excel",
+            data=buffer_template.getvalue(),
+            file_name="modele_saisie_variable.xlsx",
+            mime="application/vnd.ms-excel",
+            use_container_width=True
+        )
+        
+        with st.expander("📖 Guide des profils autorisés"):
+            st.markdown("""
+            Pour la colonne **Courbe**, utilisez uniquement :
+            - `Standard`
+            - `Manager`
+            - `Manager IS`
+            - `Inside Sales`
+            """)
 
-    st.divider()
-    st.subheader("2. Déposez votre fichier complété")
-    
-    uploaded_file = st.file_uploader("Glissez le fichier Excel ici", type=["xlsx", "xls"])
-    
-    if uploaded_file is not None:
-        try:
-            df_input = pd.read_excel(uploaded_file)
-            
-            # Application de la logique sur toutes les lignes d'un coup
-            resultats = df_input.apply(calculer_ligne, axis=1)
-            
-            # Décomposition des résultats dans de nouvelles colonnes
-            df_input['Taux Performance (TR)'] = [r[0] for r in resultats]
-            df_input["Taux Atteinte"] = [r[1] for r in resultats]
-            df_input["Variable Final à Verser"] = [r[2] for r in resultats]
-            
-            st.success("✅ Calculs effectués avec succès pour toute l'équipe !")
-            
-            # Affichage du masque de résultat
-            st.subheader("📋 Aperçu des résultats")
-            
-            # Formatage visuel pour l'affichage web
-            df_display = df_input.copy()
-            df_display['Taux Performance (TR)'] = df_display['Taux Performance (TR)'].map('{:.2%}'.format)
-            df_display['Taux Atteinte'] = df_display['Taux Atteinte'].map('{:.2%}'.format)
-            df_display['Variable Final à Verser'] = df_display['Variable Final à Verser'].map('{:,.2f} €'.format)
-            
-            st.dataframe(df_display, use_container_width=True)
-            
-            # Export vers le fichier de sortie
-            buffer_output = io.BytesIO()
-            with pd.ExcelWriter(buffer_output, engine='xlsxwriter') as writer:
-                df_input.to_excel(writer, index=False, sheet_name='Resultats_Paie')
-                
-            st.download_button(
-                label="🟢 Télécharger le fichier de Paie Final (Excel)",
-                data=buffer_output.getvalue(),
-                file_name="resultats_paie_variable.xlsx",
-                mime="application/vnd.ms-excel"
-            )
-            
-        except Exception as e:
-            st.error(f"Erreur lors de la lecture du fichier. Vérifiez que les colonnes correspondent exactement au modèle. Erreur : {e}")
+    with col_right:
+        st.markdown("### 📤 Étape 2 : Import & Calcul")
+        uploaded_file = st.file_uploader("Glissez-déposez votre fichier d'équipe ici", type=["xlsx", "xls"], label_visibility="collapsed")
+        
+        if uploaded_file is not None:
+            with st.spinner("Calcul des commissions en cours..."):
+                try:
+                    df_input = pd.read_excel(uploaded_file)
+                    resultats = df_input.apply(calculer_ligne, axis=1)
+                    
+                    df_input['Taux Performance (TR)'] = [r[0] for r in resultats]
+                    df_input["Taux Atteinte"] = [r[1] for r in resultats]
+                    df_input["Variable Final à Verser (€)"] = [r[2] for r in resultats]
+                    
+                    st.toast("Calculs terminés !", icon="🎉")
+                    
+                    st.write("")
+                    st.markdown("### 🎯 Étape 3 : Synthèse & Export")
+                    
+                    # KPIs Globaux très élégants
+                    total_variable = df_input["Variable Final à Verser (€)"].sum()
+                    effectif = len(df_input)
+                    tr_moyen = df_input['Taux Performance (TR)'].mean()
+                    
+                    kpi1, kpi2, kpi3 = st.columns(3)
+                    kpi1.metric("Effectif Traité", f"{effectif} collaborateurs")
+                    kpi2.metric("TR Moyen Équipe", f"{tr_moyen:.1%}")
+                    kpi3.metric("Enveloppe Globale (€)", f"{total_variable:,.2f} €")
+                    
+                    st.write("")
+                    
+                    # Nouveau tableau de données interactif (Streamlit Data Editor)
+                    df_display = df_input.copy()
+                    st.dataframe(
+                        df_display.style.format({
+                            'Objectif': '{:,.0f} €',
+                            'Réalisation': '{:,.0f} €',
+                            'Prime Target 100%': '{:,.0f} €',
+                            'Taux Performance (TR)': '{:.2%}',
+                            'Taux Atteinte': '{:.2%}',
+                            'Variable Final à Verser (€)': '{:,.2f} €'
+                        }),
+                        use_container_width=True
+                    )
+                    
+                    # Bouton d'export final premium
+                    buffer_output = io.BytesIO()
+                    with pd.ExcelWriter(buffer_output, engine='xlsxwriter') as writer:
+                        df_input.to_excel(writer, index=False, sheet_name='Resultats')
+                        
+                    st.write("")
+                    st.download_button(
+                        label="🟢 Exporter le Rapport de Paie Officiel (Excel)",
+                        data=buffer_output.getvalue(),
+                        file_name="rapport_paie_variable.xlsx",
+                        mime="application/vnd.ms-excel",
+                        use_container_width=True
+                    )
+                    
+                except Exception as e:
+                    st.error(f"Structure de fichier non valide. Erreur : {e}")
 
+# --- ONGLET 2 : CALCUL UNITAIRE ---
 with onglet_unitaire:
-    # Le code précédent reste ici pour faire une simulation rapide si besoin
-    st.subheader("Simuler un profil individuel")
-    c_selected = st.selectbox("Courbe", ["Standard", "Manager", "Manager IS", "Inside Sales"], key="unit_c")
-    obj = st.number_input("Objectif", min_value=1.0, value=10000.0, key="unit_o")
-    real = st.number_input("Réalisation", min_value=0.0, value=9500.0, key="unit_r")
-    target = st.number_input("Target (€)", min_value=0.0, value=2000.0, key="unit_t")
+    st.markdown("### 👤 Simuler un profil individuel")
     
-    tr = real / obj
-    if c_selected == "Standard": att = calcul_standard(tr)
-    elif c_selected == "Manager": att = calcul_manager(tr)
-    elif c_selected == "Manager IS": att = calcul_manager_is(tr)
-    else: att = calcul_inside_sales(tr)
+    col_u1, col_u2 = st.columns([1, 1], gap="large")
     
-    st.metric(label="Variable à payer", value=f"{target * att:,.2f} €")
+    with col_u1:
+        c_selected = st.selectbox("Sélectionner la courbe de référence", ["Standard", "Manager", "Manager IS", "Inside Sales"])
+        obj = st.number_input("Objectif Financier (€)", min_value=1.0, value=10000.0, step=500.0)
+        real = st.number_input("Réalisation Constatée (€)", min_value=0.0, value=9500.0, step=500.0)
+        target = st.number_input("Package Prime Cible (€)", min_value=0.0, value=2000.0, step=100.0)
+        
+        tr = real / obj
+        if c_selected == "Standard": att = calcul_standard(tr)
+        elif c_selected == "Manager": att = calcul_manager(tr)
+        elif c_selected == "Manager IS": att = calcul_manager_is(tr)
+        else: att = calcul_inside_sales(tr)
+        
+    with col_u2:
+        st.write("")
+        st.write("")
+        # Encadré visuel pour le résultat individuel
+        st.markdown(f"""
+        <div class='metric-container'>
+            <p style='color: #64748B; margin-bottom: 5px; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.5px;'>Montant Prévisonnel à Verser</p>
+            <h1 style='color: #4F46E5; margin: 0; font-size: 2.8rem;'>{target * att:,.2f} €</h1>
+            <hr style='border: 0; border-top: 1px solid #e9ecef; margin: 15px 0;'>
+            <p style='margin: 5px 0; color: #334155;'><b>Taux de Performance (TR) :</b> {tr:.2%}</p>
+            <p style='margin: 5px 0; color: #334155;'><b>Taux d'Atteinte Grille :</b> {att:.2%}</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # Barre de progression visuelle pour le TR
+        st.progress(min(float(tr), 1.0))
