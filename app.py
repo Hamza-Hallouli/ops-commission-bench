@@ -82,7 +82,7 @@ def calculer_ligne(row):
         obj = float(row.get('Objectif', 0))
         real = float(row.get('Réalisation', 0))
         target_annuelle = float(row.get('Prime Target 100%', 0))
-        courbe = str(row.get('Courbe', '')).strip()
+        courbe = str(row.get('Courbe', '')).strip().lower() # Passage en minuscule pour la tolérance
         periode = str(row.get('Période', '')).strip()
         
         if obj <= 0 or pd.isna(row.get('Période')) or periode in ["", "None", "nan", "Non assigné"]: 
@@ -90,12 +90,17 @@ def calculer_ligne(row):
             
         tr = real / obj
         
-        # Choix de la courbe
-        if courbe == "Standard": atteinte = calcul_standard(tr)
-        elif courbe == "Manager": atteinte = calcul_manager(tr)
-        elif courbe == "Manager IS": atteinte = calcul_manager_is(tr)
-        elif courbe == "Inside Sales": atteinte = calcul_inside_sales(tr)
-        else: atteinte = 0.0
+        # Choix de la courbe - CORRESPONDANCE EXACTE ALIGNÉE ICI
+        if courbe in ["standard", "standard curve"]: 
+            atteinte = calcul_standard(tr)
+        elif courbe in ["manager", "plan sales manager"]: 
+            atteinte = calcul_manager(tr)
+        elif courbe in ["manager is"]: 
+            atteinte = calcul_manager_is(tr)
+        elif courbe in ["is", "is curve", "inside sales"]: 
+            atteinte = calcul_inside_sales(tr)
+        else: 
+            atteinte = 0.0
         
         # Application de la règle de proratisation sur la Target Annuelle
         if "Q" in periode:
@@ -115,7 +120,6 @@ def load_airtable_data():
     
     if df_c.empty: return pd.DataFrame(), pd.DataFrame()
     
-    # Nettoyage et fallbacks
     for col in ["Team", "Manager", "Courbe", "Périodicité", "Nom", "Prénom"]:
         if col not in df_c.columns: df_c[col] = "Non assigné"
         df_c[col] = df_c[col].fillna("Non assigné")
@@ -125,7 +129,6 @@ def load_airtable_data():
 
     if df_p.empty or "Nom" not in df_p.columns: return df_c, pd.DataFrame()
     
-    # Élimination des conflits de colonnes si elles existent dans les deux bases
     for c in ["Prénom", "Courbe", "Périodicité", "Prime Target 100%", "Team", "Manager", "Matricule"]:
         if c in df_p.columns: df_p = df_p.drop(columns=[c])
         
@@ -152,22 +155,19 @@ if page == "📊 Dashboard & Projections":
     if df_historique.empty or "Objectif" not in df_historique.columns:
         st.info("💡 Aucune donnée de performance enregistrée. Allez dans l'onglet d'importation.")
     else:
-        # Nettoyage préventif des périodes manquantes ou nulles
         df_historique = df_historique.dropna(subset=['Période'])
         df_historique['Période'] = df_historique['Période'].astype(str).str.strip()
         df_historique = df_historique[~df_historique['Période'].isin(["", "None", "nan", "Non assigné"])]
         
         if df_historique.empty:
-            st.info("💡 Toutes les lignes de performance actuelles possèdent des périodes vides ou invalides.")
+            st.info("💡 Toutes les lignes de performance actuelles possèdent des périodes vides.")
             st.stop()
             
-        # Exécuter les calculs métiers
         res = df_historique.apply(calculer_ligne, axis=1)
         df_historique['TR'] = [r[0] for r in res]
         df_historique['Atteinte'] = [r[1] for r in res]
         df_historique['À Verser (€)'] = [r[2] for r in res]
         
-        # Filtrage
         df_visu = df_historique.copy()
         if team_filtre != "Toutes": df_visu = df_visu[df_visu["Team"] == team_filtre]
         if manager_filtre != "Tous": df_visu = df_visu[df_visu["Manager"] == manager_filtre]
@@ -176,7 +176,6 @@ if page == "📊 Dashboard & Projections":
             st.warning("Aucune donnée disponible pour ces filtres.")
             st.stop()
 
-        # --- CALCULATE FORECAST / PROJECTIONS ANNUELLES SÉCURISÉES ---
         df_synthese = df_visu.groupby(['Nom', 'Prénom', 'Courbe', 'Périodicité', 'Prime Target 100%', 'Team', 'Manager']).agg({
             'À Verser (€)': 'sum', 'Objectif': 'sum', 'Réalisation': 'sum'
         }).reset_index()
@@ -206,9 +205,8 @@ if page == "📊 Dashboard & Projections":
         k1, k2, k3 = st.columns(3)
         k1.metric("Total Variables Générés YTD", f"{df_synthese['À Verser (€)'].sum():,.2f} €")
         k2.metric("Atterrissage Budgétaire Annuel", f"{df_synthese['Atterrissage Décembre Estimé (€)'].sum():,.2f} €")
-        k3.metric("O Taux de Réalisation Équipe", f"{df_synthese['TR Moyen (%)'].mean() * 100:.1f} %")
+        k3.metric("Ø Taux de Réalisation Équipe", f"{df_synthese['TR Moyen (%)'].mean() * 100:.1f} %")
         
-        # --- PERFORMANCE PAR TEAM ---
         st.write("---")
         st.markdown("### 📊 Performance par Team")
         df_t = df_visu.groupby(['Team']).agg({'Objectif': 'sum', 'Réalisation': 'sum', 'À Verser (€)': 'sum'}).reset_index()
@@ -217,17 +215,19 @@ if page == "📊 Dashboard & Projections":
             'Objectif': '{:,.2f} €', 'Réalisation': '{:,.2f} €', 'À Verser (€)': '{:,.2f} €', 'Atteinte globale (%)': lambda x: f"{x*100:.1f} %"
         }), use_container_width=True)
 
-        # --- DYNAMIC CHRONO PIVOT TABLE ---
         st.write("---")
         st.markdown("### 📋 Grand Tableau de Bord Chronologique (Hybride)")
         
         df_pivot = df_visu.pivot_table(index=['Nom', 'Prénom', 'Team', 'Manager', 'Courbe', 'Périodicité'], columns='Période', values='À Verser (€)', aggfunc='sum').fillna(0).reset_index()
         
-        # Tri chronologique dynamique
         cols_metiers = [c for c in df_pivot.columns if c in ORDRE_PERIODES]
         cols_metiers_triees = sorted(cols_metiers, key=lambda x: ORDRE_PERIODES.index(x))
+        
+        cols_exotiques = [c for c in df_pivot.columns if c not in ORDRE_PERIODES and c not in ['Nom', 'Prénom', 'Team', 'Manager', 'Courbe', 'Périodicité']]
+        cols_metiers_totale = cols_metiers_triees + cols_exotiques
+        
         cols_fixes = ['Nom', 'Prénom', 'Team', 'Manager', 'Courbe', 'Périodicité']
-        df_pivot = df_pivot[cols_fixes + cols_metiers_triees]
+        df_pivot = df_pivot[cols_fixes + cols_metiers_totale]
         
         df_final = pd.merge(df_pivot, df_synthese[['Nom', 'Objectif', 'Réalisation', 'TR Moyen (%)', 'Atterrissage Décembre Estimé (€)']], on='Nom')
         df_final = df_final.rename(columns={'Objectif': 'Cumul Objectifs (€)', 'Réalisation': 'Cumul Réalisations (€)'})
@@ -238,18 +238,13 @@ if page == "📊 Dashboard & Projections":
             elif col not in cols_fixes: formats[col] = '{:,.2f} €'
                 
         try:
-            st.dataframe(df_final.style.format(formats).background_gradient(cmap="Blues", subset=cols_metiers_triees), use_container_width=True)
+            st.dataframe(df_final.style.format(formats).background_gradient(cmap="Blues", subset=cols_metiers_totale), use_container_width=True)
         except:
             st.dataframe(df_final.style.format(formats), use_container_width=True)
 
 # --- PAGE : IMPORTER ---
 elif page == "📤 Importer les données":
     st.subheader("📥 Générateur d'Import Multi-Périodes Automatique")
-    st.markdown("""
-    L'outil analyse la colonne **Périodicité** de ton équipe :
-    * Les profils **Mensuel** reçoivent 12 lignes (Mois 1 à 12).
-    * Les profils **Trimestriel** reçoivent 4 lignes (`Q1`, `Q2`, `Q3`, `Q4`).
-    """)
     
     mask_rows = []
     for _, col in df_collabs.iterrows():
@@ -272,14 +267,13 @@ elif page == "📤 Importer les données":
     with pd.ExcelWriter(buf, engine='xlsxwriter') as w:
         pd.DataFrame(mask_rows).to_excel(w, index=False)
         
-    st.download_button("📥 Télécharger le modèle Excel Hybride personnalisé", data=buf.getvalue(), file_name="gabarit_import_ops.xlsx")
+    st.download_button("📥 Télécharger le modèle Excel Hybride", data=buf.getvalue(), file_name="gabarit_import_ops.xlsx")
     
     st.write("---")
-    file = st.file_uploader("Déposer le fichier Excel complété", type=["xlsx"])
+    file = st.file_uploader("Déposer le fichier Excel", type=["xlsx"])
     
-    if file and st.button("💾 Sauvegarder et injecter dans Airtable"):
+    if file and st.button("💾 Sauvegarder et injecter"):
         df_up = pd.read_excel(file)
-        
         if "Période" in df_up.columns and "Période (Mois ou Q)" not in df_up.columns:
             df_up = df_up.rename(columns={"Période": "Période (Mois ou Q)"})
             
@@ -294,13 +288,7 @@ elif page == "📤 Importer les données":
                     obj = float(row["Objectif"])
                     real = float(row["Réalisation"])
                     if obj == 0.0 and real == 0.0: continue
-                    
-                    records.append({
-                        "Nom": str(row["Nom"]),
-                        "Période": p,
-                        "Objectif": obj,
-                        "Réalisation": real
-                    })
+                    records.append({"Nom": str(row["Nom"]), "Période": p, "Objectif": obj, "Réalisation": real})
                 except:
                     continue
             if records:
@@ -308,7 +296,6 @@ elif page == "📤 Importer les données":
                 st.cache_data.clear()
                 st.success(f"🎉 Import réussi ! {len(records)} lignes ajoutées.")
 
-# --- PAGE : LISTE ---
 elif page == "👥 Liste des Équipes":
     st.subheader("Référentiel Collaborateurs")
     st.dataframe(df_collabs[['Nom', 'Prénom', 'Team', 'Manager', 'Courbe', 'Périodicité', 'Prime Target 100%']], use_container_width=True)
