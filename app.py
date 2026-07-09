@@ -23,14 +23,13 @@ ORDRE_PERIODES = [
     "10", "11", "12", "Q4"
 ]
 
-# --- MOTEURS DE CALCUL DE COURBE ---
+# --- MOTEURS DE CALCUL DE COURBE CORRIGÉS SELON TES GRILLES ---
 def calcul_standard(tr):
     if tr < 0.50: return tr * 0.40
     elif tr < 0.90: return tr * tr * 0.80
     elif tr < 1.00: return tr * tr * 0.95
-    elif tr == 1.00: return 1.00
     elif tr < 1.91: return tr * tr * 1.10
-    else: return 4.00
+    else: return 4.00  # Cap à 400% au-delà de 191%
 
 def calcul_manager(tr):
     if tr < 0.30: return 0.0
@@ -49,7 +48,7 @@ def calcul_manager(tr):
     elif tr < 1.30: return tr * 1.50
     elif tr < 1.35: return tr * 1.60
     elif tr < 1.45: return tr * 1.70
-    else: return 2.50
+    else: return 2.50  # Cap à 250% au-delà de 145%
 
 def calcul_manager_is(tr):
     if tr < 0.70: return tr * 0.40
@@ -62,7 +61,7 @@ def calcul_manager_is(tr):
     elif tr < 1.10: return tr * 1.20
     elif tr < 1.20: return tr * 1.25
     elif tr < 1.55: return tr * 1.30
-    else: return 2.00
+    else: return 2.00  # Cap à 200% au-delà de 155%
 
 def calcul_inside_sales(tr):
     if tr < 0.70: return tr * 0.40
@@ -74,8 +73,9 @@ def calcul_inside_sales(tr):
     elif tr < 1.39: return tr * 1.35
     elif tr < 1.50: return tr * 1.40
     elif tr < 1.72: return tr * 1.50
-    else: return 2.50
+    else: return 2.50  # Cap à 250% au-delà de 172%
 
+# --- CALCUL DES LIGNES AVEC PRORATISATION TARGET ANNUELLE ---
 def calculer_ligne(row):
     try:
         obj = float(row.get('Objectif', 0))
@@ -89,10 +89,11 @@ def calculer_ligne(row):
             
         tr = real / obj
         
+        # Dispatching vers le bon moteur
         if courbe in ["standard", "standard curve"]: atteinte = calcul_standard(tr)
         elif courbe in ["manager", "plan sales manager"]: atteinte = calcul_manager(tr)
         elif courbe in ["manager is"]: atteinte = calcul_manager_is(tr)
-        elif courbe in ["is", "is curve", "inside sales"]: atteinte = calcul_inside_sales(tr)
+        elif courbe in ["is", "is curve", "inside sales", "standard is curve"]: atteinte = calcul_inside_sales(tr)
         else: atteinte = 0.0
         
         if "Q" in periode: target_proratisee = target_annuelle / 4.0
@@ -183,11 +184,11 @@ if page == "📊 Dashboard & Projections":
         k2.metric("Atterrissage Budgétaire Annuel", f"{df_synthese['Atterrissage Décembre Estimé (€)'].sum():,.2f} €")
         k3.metric("Ø Taux de Réalisation Équipe", f"{df_synthese['TR Moyen (%)'].mean() * 100:.1f} %")
         
-        # --- FOCUS ANALYSE INDIVIDUELLE AVEC TRANSPARENCE CALCULS ---
+        # --- FOCUS ANALYSE INDIVIDUELLE ---
         st.write("---")
         st.markdown("### 🔍 Focus Analyse Individuelle & Méthodes de calcul")
         sales_selectionne = st.selectbox("Sélectionner un collaborateur :", df_synthese['Nom'].unique())
-        df_sales = df_visu[df_visu['Nom'] == sales_selectionne].sort_values(by="Mois" if "Mois" in df_visu.columns else "Période")
+        df_sales = df_visu[df_visu['Nom'] == sales_selectionne].sort_values(by="Période")
         
         col1, col2 = st.columns([1, 2])
         with col1:
@@ -196,9 +197,8 @@ if page == "📊 Dashboard & Projections":
                 st.info(f"**Période : {r['Période']}** \n"
                         f"* Objectif : {r['Objectif']:,.2f} € | Réal : {r['Réalisation']:,.2f} €\n"
                         f"* **Taux d'Atteinte (TR) : {r['TR']*100:.1f} %** \n"
-                        f"* **Variable Généré : {r['À Verser (€)']:,.2f} €**")
+                        f"* **Variable Génré : {r['À Verser (€)']:,.2f} €**")
                 
-                # EXPLICATION EXPLICITE DU CALCUL PAS-À-PAS
                 with st.expander(f"⚙️ Décomposition mathématique détaillée ({r['Période']})"):
                     base_diviseur = 4.0 if "Q" in str(r['Période']) else 12.0
                     target_prorata = r['Prime Target 100%'] / base_diviseur
@@ -229,15 +229,14 @@ if page == "📊 Dashboard & Projections":
         except:
             st.dataframe(df_final.style.format(formats), use_container_width=True)
 
-# --- NOUVELLE PAGE : SIMULATEUR INTERACTIF ---
+# --- PAGE : SIMULATEUR ---
 elif page == "🧮 Simulateur & Courbes":
     st.subheader("🧮 Bac à Sable & Simulateur de Variable")
-    st.markdown("Testez des scénarios de vente fictifs pour comprendre immédiatement le comportement des courbes de l'entreprise.")
     
     s_col1, s_col2 = st.columns(2)
     with s_col1:
         st.markdown("### 📐 Paramètres de simulation")
-        courbe_sim = st.selectbox("Sélectionnez le type de plan de courbe :", ["Plan Sales Manager / Manager", "Standard / Standard Curve", "Inside Sales / IS", "Manager IS"])
+        courbe_sim = st.selectbox("Sélectionnez le type de plan de courbe :", ["Plan Sales Manager / Manager", "Standard / Standard Curve", "Inside Sales / IS / Standard IS Curve", "Manager IS"])
         target_sim = st.number_input("Package Variable Annuel à 100% (€) :", value=10000, step=1000)
         p_type = st.radio("Rythme de la période simuler :", ["Mensuelle (1/12)", "Trimestrielle (1/4)"])
         
@@ -253,20 +252,18 @@ elif page == "🧮 Simulateur & Courbes":
             tr_sim = real_sim / obj_sim
             st.write(f"📈 Taux de réalisation ($TR$) simulé : **{tr_sim*100:.1f} %**")
             
-            # Application de la logique selon la courbe sélectionnée
             if "Manager" in courbe_sim and "IS" not in courbe_sim: coeff = calcul_manager(tr_sim)
-            elif "Standard" in courbe_sim: coeff = calcul_standard(tr_sim)
+            elif "Standard" in courbe_sim and "IS" not in courbe_sim: coeff = calcul_standard(tr_sim)
             elif "Manager IS" in courbe_sim: coeff = calcul_manager_is(tr_sim)
             else: coeff = calcul_inside_sales(tr_sim)
             
             prime_finale_sim = base_prime * coeff
-            
             st.write("---")
             c1, c2 = st.columns(2)
             c1.metric("Multiplicateur de courbe obtenu", f"{coeff*100:.1f} %")
             c2.metric("Variable simulé à verser (€)", f"{prime_finale_sim:,.2f} €")
 
-# --- PAGES ASSISTANTES INDÉPENDANTES ---
+# --- PAGES ASSISTANTES ---
 elif page == "📤 Importer les données":
     st.subheader("📥 Générateur d'Import Multi-Périodes Automatique")
     mask_rows = []
