@@ -3,45 +3,25 @@ import pandas as pd
 from pyairtable import Api
 import io
 
-# --- 1. CONFIGURATION DE L'APPLICATION ---
-st.set_page_config(
-    page_title="Ops Variable Engine", 
-    page_icon="💎", 
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
+# Config
+st.set_page_config(page_title="Ops Variable Engine", page_icon="💎", layout="wide")
 
-# --- STYLE CSS CUSTOM PREMIUM ---
-st.markdown("""
-    <style>
-    html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
-    .metric-container {
-        background-color: #f8f9fa;
-        border: 1px solid #e9ecef;
-        padding: 20px;
-        border-radius: 12px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.02);
-    }
-    .stFileUploader {
-        border: 2px dashed #4F46E5 !important;
-        border-radius: 12px;
-        padding: 10px;
-        background-color: #FAFAFA;
-    }
-    </style>
-""", unsafe_allow_html=True)
-
-# --- 2. CONNEXION SÉCURISÉE AVEC LE JETON AIRTABLE ---
-# Récupération automatique du Jeton et de l'ID de base depuis les "Secrets" de Streamlit
+# Connexion
 TOKEN_AIRTABLE = st.secrets["AIRTABLE_API_KEY"]
 BASE_ID_AIRTABLE = st.secrets["AIRTABLE_BASE_ID"]
 
-# Initialisation du client officiel avec le Jeton (PAT)
 api = Api(TOKEN_AIRTABLE)
 table_collaborateurs = api.table(BASE_ID_AIRTABLE, "Collaborateurs")
 table_performances = api.table(BASE_ID_AIRTABLE, "Performances")
 
-# --- 3. MOTEURS DE CALCUL (LES 4 COURBES) ---
+# Dictionnaire de traduction des mois pour l'UI
+NOM_DES_MOIS = {
+    1: "01 - Janvier", 2: "02 - Février", 3: "03 - Mars", 4: "04 - Avril",
+    5: "05 - Mai", 6: "06 - Juin", 7: "07 - Juillet", 8: "08 - Août",
+    9: "09 - Septembre", 10: "10 - Octobre", 11: "11 - Novembre", 12: "12 - Décembre"
+}
+
+# --- MOTEURS DE CALCUL (LOGIQUE MÉTIER) ---
 def calcul_standard(tr):
     if tr < 0.50: return tr * 0.40
     elif tr < 0.90: return tr * tr * 0.80
@@ -96,10 +76,10 @@ def calcul_inside_sales(tr):
 
 def calculer_ligne(row):
     try:
-        obj = float(row['Objectif'])
-        real = float(row['Réalisation'])
-        target = float(row['Prime Target 100%'])
-        courbe = str(row['Courbe']).strip()
+        obj = float(row.get('Objectif', 0))
+        real = float(row.get('Réalisation', 0))
+        target = float(row.get('Prime Target 100%', 0))
+        courbe = str(row.get('Courbe', '')).strip()
         if obj <= 0: return 0.0, 0.0, 0.0
         tr = real / obj
         
@@ -109,13 +89,12 @@ def calculer_ligne(row):
         elif courbe == "Inside Sales": atteinte = calcul_inside_sales(tr)
         else: atteinte = 0.0
             
-        variable = target * atteinte
-        return tr, atteinte, variable
+        return tr, atteinte, (target * atteinte)
     except:
         return 0.0, 0.0, 0.0
 
-# --- 4. RÉCUPÉRATION DES DONNÉES DEPUIS LE JETON ---
-@st.cache_data(ttl=30)
+# --- CHARGEMENT DATA VIA MATRICULE ---
+@st.cache_data(ttl=10)
 def load_airtable_data():
     collabs = [r["fields"] for r in table_collaborateurs.all()]
     df_c = pd.DataFrame(collabs)
@@ -123,44 +102,37 @@ def load_airtable_data():
     if not perfs:
         return df_c, pd.DataFrame()
     df_p = pd.DataFrame(perfs)
-    return df_c, pd.merge(df_p, df_c, on="Nom", how="left")
+    # Liaison robuste sécurisée sur le Matricule
+    return df_c, pd.merge(df_p, df_c, on="Matricule", how="left")
 
-# --- 5. INTERFACE ET MENUS ---
-st.markdown("<h1 style='text-align: center; color: #1E293B; margin-bottom: 5px;'>💎 Ops Compensation Intelligence</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: #64748B; font-size: 1.1rem;'>MVP de suivi de paie variable et prévisions budgétaires.</p>", unsafe_allow_html=True)
-st.write("")
+# --- UI ---
+st.title("💎 Ops Compensation Intelligence (v2.0)")
+page = st.sidebar.radio("Menu", ["📊 Dashboard & Projections", "📤 Importer les données", "👥 Liste des Équipes"])
 
-page = st.sidebar.radio("Navigation MVP", ["📊 Dashboard & Projections", "📤 Importer les données", "👥 Liste des Équipes"])
+df_collabs, df_historique = load_airtable_data()
 
-# Lecture des données via le Token
-try:
-    df_collabs, df_historique = load_airtable_data()
-except Exception as e:
-    st.error("⚠️ Impossible de s'authentifier auprès d'Airtable. Vérifiez votre Jeton (PAT) et votre Base ID dans les Secrets Streamlit.")
-    st.stop()
-
-# --- PAGE : DASHBOARD & PROJECTIONS ---
+# --- PAGE : DASHBOARD ---
 if page == "📊 Dashboard & Projections":
     st.subheader("🎯 Suivi et Atterrissage Budgétaire")
     
     if df_historique.empty or "Objectif" not in df_historique.columns:
-        st.info("Aucune donnée disponible. Veuillez importer vos premiers fichiers de performance.")
+        st.info("Aucune donnée de performance. Allez dans l'onglet 'Importer les données'.")
     else:
         res = df_historique.apply(calculer_ligne, axis=1)
         df_historique['TR'] = [r[0] for r in res]
         df_historique['Atteinte'] = [r[1] for r in res]
         df_historique['À Verser (€)'] = [r[2] for r in res]
         
-        dernier_mois = int(df_historique['Mois'].max())
+        # Traduction numérique -> Texte pour l'affichage de l'utilisateur
+        df_historique['Nom du Mois'] = df_historique['Mois'].map(NOM_DES_MOIS)
         
-        # Logique de Forecast (Mensuel vs Trimestriel)
-        df_synthese = df_historique.groupby(['Nom', 'Prénom', 'Courbe', 'Périodicité', 'Prime Target 100%']).agg({'À Verser (€)': 'sum'}).reset_index()
+        dernier_mois = int(df_historique['Mois'].max())
+        df_synthese = df_historique.groupby(['Matricule', 'Nom', 'Prénom', 'Courbe', 'Périodicité', 'Prime Target 100%']).agg({'À Verser (€)': 'sum'}).reset_index()
         
         projections = []
         for idx, row in df_synthese.iterrows():
             deja_paye = row['À Verser (€)']
             target = row['Prime Target 100%']
-            
             if row['Périodicité'] == 'Mensuel':
                 mois_restants = max(0, 12 - dernier_mois)
                 perf_moyenne = deja_paye / (target * dernier_mois) if deja_paye > 0 else 1.0
@@ -173,57 +145,63 @@ if page == "📊 Dashboard & Projections":
                 
         df_synthese["Atterrissage Décembre Estimé (€)"] = projections
         
-        # Affichage Macro
         k1, k2, k3 = st.columns(3)
-        k1.metric("Statut Période", f"Mois {dernier_mois} / 12 traité")
-        k2.metric("Total Versé YTD (Cumulé)", f"{df_synthese['À Verser (€)'].sum():,.2f} €")
+        k1.metric("Dernier Mois Traité", NOM_DES_MOIS[dernier_mois])
+        k2.metric("Total Versé YTD", f"{df_synthese['À Verser (€)'].sum():,.2f} €")
         k3.metric("Atterrissage Annuel Estimé", f"{df_synthese['Atterrissage Décembre Estimé (€)'].sum():,.2f} €")
         
-        # Pivot Horizontal
-        df_pivot = df_historique.pivot_table(index=['Nom', 'Prénom', 'Courbe', 'Périodicité'], columns='Mois', values='À Verser (€)', aggfunc='sum').fillna(0)
-        df_pivot.columns = [f"Mois {int(c)} (€)" for c in df_pivot.columns]
+        # Pivot Horizontal basé sur le Nom du Mois textuel
+        df_pivot = df_historique.pivot_table(index=['Matricule', 'Nom', 'Prénom', 'Courbe', 'Périodicité'], columns='Nom du Mois', values='À Verser (€)', aggfunc='sum').fillna(0)
         df_pivot = df_pivot.reset_index()
         
-        df_final = pd.merge(df_pivot, df_synthese[['Nom', 'Prénom', 'Atterrissage Décembre Estimé (€)']], on=['Nom', 'Prénom'])
+        df_final = pd.merge(df_pivot, df_synthese[['Matricule', 'Atterrissage Décembre Estimé (€)']], on='Matricule')
         
         st.write("")
         st.markdown("### 📋 Grand Tableau de Bord Chronologique")
         
-        formats = {col: '{:,.2f} €' for col in df_final.columns if 'Mois' in col or '€' in col or 'Atterrissage' in col}
-        st.dataframe(df_final.style.format(formats).background_gradient(cmap="Blues", subset=[c for c in df_final.columns if 'Mois' in c]), use_container_width=True)
-
-# --- PAGE : IMPORTER LES DONNÉES ---
-elif page == "📤 Importer les données":
-    st.subheader("📥 Importer les réalisations du mois")
-    mois_select = st.slider("Sélectionnez le mois de l'import", 1, 12, 1)
-    
-    if mois_select in [3, 6, 9, 12]:
-        st.info(f"💡 Fin du trimestre détectée (Mois {mois_select}). Vos collaborateurs trimestriels seront calculés sur cet import.")
+        formats = {col: '{:,.2f} €' for col in df_final.columns if 'Janvier' in col or 'Février' in col or 'Mars' in col or 'Avril' in col or 'Mai' in col or 'Juin' in col or 'Juillet' in col or 'Août' in col or 'Septembre' in col or 'Octobre' in col or 'Novembre' in col or 'Décembre' in col or 'Atterrissage' in col}
         
-    mask_data = {"Nom": df_collabs["Nom"].tolist(), "Prénom": df_collabs["Prénom"].tolist(), "Objectif": [0]*len(df_collabs), "Réalisation": [0]*len(df_collabs)}
+        # Utilisation de background_gradient uniquement si matplotlib est installé
+        try:
+            st.dataframe(df_final.style.format(formats).background_gradient(cmap="Blues", subset=[c for c in df_final.columns if 'Mois' in c or '0' in c]), use_container_width=True)
+        except:
+            st.dataframe(df_final.style.format(formats), use_container_width=True)
+
+# --- PAGE : IMPORTER ---
+elif page == "📤 Importer les données":
+    st.subheader("📥 Charger un mois de performance")
+    mois_select = st.slider("Mois de l'import", 1, 12, 1)
+    
+    # Masque basé sur le matricule sécurisé
+    mask_data = {
+        "Matricule": df_collabs["Matricule"].tolist(),
+        "Nom": df_collabs["Nom"].tolist(),
+        "Prénom": df_collabs["Prénom"].tolist(),
+        "Objectif": [0]*len(df_collabs),
+        "Réalisation": [0]*len(df_collabs)
+    }
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine='xlsxwriter') as w:
         pd.DataFrame(mask_data).to_excel(w, index=False)
         
-    st.download_button(f"📥 Télécharger le masque pré-rempli (Mois {mois_select})", data=buf.getvalue(), file_name=f"masque_mois_{mois_select}.xlsx")
+    st.download_button(f"📥 Télécharger le masque (Mois : {NOM_DES_MOIS[mois_select]})", data=buf.getvalue(), file_name=f"masque_mois_{mois_select}.xlsx")
     
-    file = st.file_uploader("Déposez le fichier Excel rempli ici", type=["xlsx"])
-    if file and st.button("💾 Enregistrer définitivement dans Airtable via Jeton"):
+    file = st.file_uploader("Déposez le fichier Excel complété", type=["xlsx"])
+    if file and st.button("💾 Sauvegarder dans Airtable"):
         df_up = pd.read_excel(file)
         records = []
         for _, row in df_up.iterrows():
             records.append({
-                "Nom": str(row["Nom"]),
+                "Matricule": str(row["Matricule"]),
                 "Mois": int(mois_select),
                 "Objectif": float(row["Objectif"]),
                 "Réalisation": float(row["Réalisation"])
             })
-        # Envoi sécurisé par lots vers Airtable
         table_performances.batch_create(records)
         st.cache_data.clear()
-        st.success("🎉 Données synchronisées avec succès dans la base de données via ton jeton d'accès !")
+        st.success(f"🎉 Données enregistrées pour {NOM_DES_MOIS[mois_select]} !")
 
-# --- PAGE : LISTE DES ÉQUIPES ---
+# --- PAGE : LISTE ---
 elif page == "👥 Liste des Équipes":
-    st.subheader("Référentiel Collaborateurs Actifs")
-    st.dataframe(df_collabs[['Nom', 'Prénom', 'Courbe', 'Périodicité', 'Prime Target 100%']], use_container_width=True)
+    st.subheader("Référentiel Collaborateurs")
+    st.dataframe(df_collabs[['Matricule', 'Nom', 'Prénom', 'Courbe', 'Périodicité', 'Prime Target 100%']], use_container_width=True)
