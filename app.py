@@ -94,16 +94,24 @@ def calculer_ligne(row):
     except:
         return 0.0, 0.0, 0.0
 
-# --- CHARGEMENT DATA ---
+# --- CHARGEMENT DATA SÉCURISÉ ---
 @st.cache_data(ttl=2)
 def load_airtable_data():
     df_c = pd.DataFrame([r["fields"] for r in table_collaborateurs.all()])
     df_p = pd.DataFrame([r["fields"] for r in table_performances.all()])
     if df_c.empty: return pd.DataFrame(), pd.DataFrame()
+    
+    # Sécurité si les nouvelles colonnes sont vides / absentes
+    if "Team" not in df_c.columns: df_c["Team"] = "Non assigné"
+    if "Manager" not in df_c.columns: df_c["Manager"] = "Non assigné"
+    df_c["Team"] = df_c["Team"].fillna("Non assigné")
+    df_c["Manager"] = df_c["Manager"].fillna("Non assigné")
+    
     if "Matricule" not in df_c.columns: df_c["Matricule"] = ""
     if not df_p.empty and "Matricule" not in df_p.columns: df_p["Matricule"] = ""
     if df_p.empty or "Nom" not in df_p.columns: return df_c, pd.DataFrame()
     if "Matricule" in df_p.columns: df_p = df_p.drop(columns=["Matricule"])
+    
     df_global = pd.merge(df_p, df_c, on="Nom", how="left")
     return df_c, df_global
 
@@ -119,11 +127,21 @@ if df_collabs.empty:
 
 # --- PAGE : DASHBOARD ---
 if page == "📊 Dashboard & Projections":
-    st.subheader("🎯 Suivi et Atterrissage Budgétaire")
     
+    # BARRE DE FILTRES OPS (SIDEBAR)
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🎛️ Filtres du Dashboard")
+    
+    teams_dispos = ["Toutes"] + list(df_collabs["Team"].unique())
+    team_filtre = st.sidebar.selectbox("Filtrer par Team :", teams_dispos)
+    
+    managers_dispos = ["Tous"] + list(df_collabs["Manager"].unique())
+    manager_filtre = st.sidebar.selectbox("Filtrer par Manager :", managers_dispos)
+
     if df_historique.empty or "Objectif" not in df_historique.columns:
         st.info("💡 Aucune donnée de performance. Utilisez l'onglet d'importation.")
     else:
+        # Calculs métiers
         res = df_historique.apply(calculer_ligne, axis=1)
         df_historique['TR'] = [r[0] for r in res]
         df_historique['Atteinte'] = [r[1] for r in res]
@@ -132,9 +150,24 @@ if page == "📊 Dashboard & Projections":
         
         dernier_mois = int(df_historique['Mois'].max())
         
-        df_synthese = df_historique.groupby(['Nom', 'Prénom', 'Courbe', 'Périodicité', 'Prime Target 100%']).agg({
-            'À Verser (€)': 'sum', 'Objectif': 'mean', 'Réalisation': 'mean', 'TR': 'mean'
+        # --- APPLICATION DES FILTRES ---
+        df_visu = df_historique.copy()
+        if team_filtre != "Toutes":
+            df_visu = df_visu[df_visu["Team"] == team_filtre]
+        if manager_filtre != "Tous":
+            df_visu = df_visu[df_visu["Manager"] == manager_filtre]
+            
+        if df_visu.empty:
+            st.warning("⚠️ Aucun résultat pour les filtres sélectionnés.")
+            st.stop()
+
+        # Synthèse Individuelle filtrée
+        df_synthese = df_visu.groupby(['Nom', 'Prénom', 'Courbe', 'Périodicité', 'Prime Target 100%', 'Team', 'Manager']).agg({
+            'À Verser (€)': 'sum', 'Objectif': 'sum', 'Réalisation': 'sum'
         }).reset_index()
+        
+        # Calcul Taux Atteinte Global Période
+        df_synthese['Taux Réal Global (%)'] = df_synthese['Réalisation'] / df_synthese['Objectif']
         
         projections = []
         for idx, row in df_synthese.iterrows():
@@ -152,21 +185,46 @@ if page == "📊 Dashboard & Projections":
                 
         df_synthese["Atterrissage Décembre Estimé (€)"] = projections
         
+        # KPIS GENERAUX FILTRÉS
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Dernier Mois Traité", NOM_DES_MOIS.get(dernier_mois, str(dernier_mois)))
-        k2.metric("Total Versé YTD", f"{df_synthese['À Verser (€)'].sum():,.2f} €")
-        k3.metric("Atterrissage Annuel Estimé", f"{df_synthese['Atterrissage Décembre Estimé (€)'].sum():,.2f} €")
-        k4.metric("Taux Réalisation Moyen Équipe", f"{df_synthese['TR'].mean() * 100:.1f} %")
+        k1.metric("Période active max", NOM_DES_MOIS.get(dernier_mois, str(dernier_mois)))
+        k2.metric("Total Versé YTD (Sélection)", f"{df_synthese['À Verser (€)'].sum():,.2f} €")
+        k3.metric("Atterrissage Estimé (Sélection)", f"{df_synthese['Atterrissage Décembre Estimé (€)'].sum():,.2f} €")
+        k4.metric("Ø Réalisation (Sélection)", f"{df_synthese['Taux Réal Global (%)'].mean() * 100:.1f} %")
         
-        # Focus Analyse Individuelle
+        # --- SECTION ANALYSE D'ÉQUIPE (TEAM AGGREGATION) ---
+        st.write("---")
+        st.markdown("### 📊 Performance Groupée par Team")
+        df_team_perf = df_visu.groupby(['Team']).agg({
+            'Objectif': 'sum',
+            'Réalisation': 'sum',
+            'À Verser (€)': 'sum'
+        }).reset_index()
+        df_team_perf['Taux Atteinte Global'] = df_team_perf['Réalisation'] / df_team_perf['Objectif']
+        
+        # Formatage rapide pour le tableau d'équipe
+        df_team_show = df_team_perf.rename(columns={
+            'Objectif': 'Total Objectifs (€)',
+            'Réalisation': 'Total Réalisations (€)',
+            'À Verser (€)': 'Variable Total Généré (€)',
+            'Taux Atteinte Global': 'Taux Atteinte Global (%)'
+        })
+        st.dataframe(df_team_show.style.format({
+            'Total Objectifs (€)': '{:,.2f} €',
+            'Total Réalisations (€)': '{:,.2f} €',
+            'Variable Total Généré (€)': '{:,.2f} €',
+            'Taux Atteinte Global (%)': lambda x: f"{x*100:.1f} %"
+        }), use_container_width=True)
+
+        # --- SECTION ANALYSE INDIVIDUELLE ---
         st.write("---")
         st.markdown("### 🔍 Focus Analyse Individuelle")
         sales_selectionne = st.selectbox("Sélectionner un collaborateur :", df_synthese['Nom'].unique())
-        df_sales = df_historique[df_historique['Nom'] == sales_selectionne].sort_values(by="Mois")
+        df_sales = df_visu[df_visu['Nom'] == sales_selectionne].sort_values(by="Mois")
         
         col1, col2 = st.columns([1, 2])
         with col1:
-            st.markdown(f"**Indicateurs pour {sales_selectionne} :**")
+            st.markdown(f"**Détails de l'année pour {sales_selectionne} :**")
             for _, r in df_sales.iterrows():
                 st.info(f"**{r['Nom du Mois']}** : \n"
                         f"* Objectif : {r['Objectif']:,.2f} € | Réal : {r['Réalisation']:,.2f} €\n"
@@ -175,16 +233,17 @@ if page == "📊 Dashboard & Projections":
             st.markdown("**Comparatif Graphique Objectif vs Réalisation**")
             st.bar_chart(df_sales.set_index('Nom du Mois')[['Objectif', 'Réalisation']])
             
-        # Tableau Global
+        # --- GRAND TABLEAU CHRONOLOGIQUE ---
         st.write("---")
         st.markdown("### 📋 Grand Tableau de Bord Chronologique")
-        df_pivot = df_historique.pivot_table(index=['Nom', 'Prénom', 'Courbe', 'Périodicité'], columns='Nom du Mois', values='À Verser (€)', aggfunc='sum').fillna(0).reset_index()
-        df_final = pd.merge(df_pivot, df_synthese[['Nom', 'Objectif', 'Réalisation', 'TR', 'Atterrissage Décembre Estimé (€)']], on='Nom')
-        df_final = df_final.rename(columns={'Objectif': 'Ø Objectif (€)', 'Réalisation': 'Ø Réalisation (€)', 'TR': 'Ø Taux Réal (%)'})
+        df_pivot = df_visu.pivot_table(index=['Nom', 'Prénom', 'Team', 'Manager', 'Courbe', 'Périodicité'], columns='Nom du Mois', values='À Verser (€)', aggfunc='sum').fillna(0).reset_index()
+        
+        df_final = pd.merge(df_pivot, df_synthese[['Nom', 'Objectif', 'Réalisation', 'Taux Réal Global (%)', 'Atterrissage Décembre Estimé (€)']], on='Nom')
+        df_final = df_final.rename(columns={'Objectif': 'Cumul Objectifs (€)', 'Réalisation': 'Cumul Réalisations (€)'})
         
         formats = {}
         for col in df_final.columns:
-            if 'Taux' in col: formats[col] = lambda x: f"{x*100:.1f} %"
+            if 'Global (%)' in col: formats[col] = lambda x: f"{x*100:.1f} %"
             elif any(m in col for m in ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre','Estimé','Objectif','Réalisation']):
                 formats[col] = '{:,.2f} €'
                 
@@ -193,16 +252,10 @@ if page == "📊 Dashboard & Projections":
         except:
             st.dataframe(df_final.style.format(formats), use_container_width=True)
 
-# --- PAGE : IMPORTER (MISE À JOUR MULTI-MOIS) ---
+# --- PAGE : IMPORTER ---
 elif page == "📤 Importer les données":
     st.subheader("📥 Centralisation des Imports (Simple ou Multi-mois)")
-    st.markdown("""
-    💡 **Nouveauté** : Vous pouvez importer plusieurs mois d'un coup. Le fichier généré ci-dessous contient 
-    automatiquement des lignes pour chaque commercial, du **Mois 1 (Janvier) au mois actuel**. 
-    Remplissez simplement les lignes des mois concernés et laissez les autres à 0 ou supprimez-les.
-    """)
     
-    # Génération intelligente du masque multi-lignes (Mois 1 jusqu'au mois actuel)
     mois_actuel = datetime.now().month
     mask_rows = []
     for _, col in df_collabs.iterrows():
@@ -219,22 +272,19 @@ elif page == "📤 Importer les données":
     with pd.ExcelWriter(buf, engine='xlsxwriter') as w:
         pd.DataFrame(mask_rows).to_excel(w, index=False)
         
-    st.download_button("📥 Télécharger le nouveau Masque Multi-mois (Excel)", data=buf.getvalue(), file_name="masque_multi_mois_performances.xlsx")
+    st.download_button("📥 Télécharger le Masque d'Import (Excel)", data=buf.getvalue(), file_name="masque_performances.xlsx")
     
     st.write("---")
-    file = st.file_uploader("Déposez le fichier Excel complété (Multi-mois ou mensuel)", type=["xlsx"])
+    file = st.file_uploader("Déposez le fichier Excel complété", type=["xlsx"])
     
-    if file and st.button("💾 Sauvegarder toutes les données dans Airtable"):
+    if file and st.button("💾 Sauvegarder dans Airtable"):
         df_up = pd.read_excel(file)
-        
-        # Gestion de la flexibilité des noms de colonnes
         if "Mois" in df_up.columns and "Mois (Chiffre de 1 à 12)" not in df_up.columns:
             df_up = df_up.rename(columns={"Mois": "Mois (Chiffre de 1 à 12)"})
             
         required_cols = ["Nom", "Mois (Chiffre de 1 à 12)", "Objectif", "Réalisation"]
-        
         if not all(c in df_up.columns for c in required_cols):
-            st.error(f"⚠️ Le fichier doit contenir au minimum les colonnes : {', '.join(required_cols)}")
+            st.error(f"⚠️ Le fichier doit contenir : {', '.join(required_cols)}")
         else:
             records = []
             for idx, row in df_up.iterrows():
@@ -242,29 +292,17 @@ elif page == "📤 Importer les données":
                     m = int(row["Mois (Chiffre de 1 à 12)"])
                     obj = float(row["Objectif"])
                     real = float(row["Réalisation"])
-                    
-                    # On ignore les lignes restées à 0 pour ne pas polluer Airtable inutilement
-                    if obj == 0.0 and real == 0.0:
-                        continue
-                        
+                    if obj == 0.0 and real == 0.0: continue
                     if 1 <= m <= 12:
-                        records.append({
-                            "Nom": str(row["Nom"]),
-                            "Mois": m,
-                            "Objectif": obj,
-                            "Réalisation": real
-                        })
+                        records.append({"Nom": str(row["Nom"]), "Mois": m, "Objectif": obj, "Réalisation": real})
                 except:
                     continue
-            
             if records:
                 table_performances.batch_create(records)
                 st.cache_data.clear()
-                st.success(f"🎉 Succès ! {len(records)} lignes de performances ont été injectées dans Airtable.")
-            else:
-                st.warning("⚠️ Aucune donnée modifiée détectée (toutes les lignes étaient à 0).")
+                st.success(f"🎉 {len(records)} lignes enregistrées !")
 
 # --- PAGE : LISTE ---
 elif page == "👥 Liste des Équipes":
     st.subheader("Référentiel Collaborateurs")
-    st.dataframe(df_collabs[['Nom', 'Prénom', 'Courbe', 'Périodicité', 'Prime Target 100%', 'Matricule']], use_container_width=True)
+    st.dataframe(df_collabs[['Nom', 'Prénom', 'Team', 'Manager', 'Courbe', 'Périodicité', 'Prime Target 100%']], use_container_width=True)
