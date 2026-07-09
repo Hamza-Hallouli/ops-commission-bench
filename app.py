@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from pyairtable import Api
 import io
+from datetime import datetime
 
 # Config de l'application
 st.set_page_config(page_title="Ops Variable Engine", page_icon="💎", layout="wide")
@@ -14,7 +15,7 @@ api = Api(TOKEN_AIRTABLE)
 table_collaborateurs = api.table(BASE_ID_AIRTABLE, "Collaborateurs")
 table_performances = api.table(BASE_ID_AIRTABLE, "Performances")
 
-# Dictionnaire des mois pour l'affichage humain
+# Dictionnaire des mois
 NOM_DES_MOIS = {
     1: "01 - Janvier", 2: "02 - Février", 3: "03 - Mars", 4: "04 - Avril",
     5: "05 - Mai", 6: "06 - Juin", 7: "07 - Juillet", 8: "08 - Août",
@@ -93,27 +94,16 @@ def calculer_ligne(row):
     except:
         return 0.0, 0.0, 0.0
 
-# --- CHARGEMENT DES DONNÉES SÉCURISÉ ---
-@st.cache_data(ttl=5)
+# --- CHARGEMENT DATA ---
+@st.cache_data(ttl=2)
 def load_airtable_data():
     df_c = pd.DataFrame([r["fields"] for r in table_collaborateurs.all()])
     df_p = pd.DataFrame([r["fields"] for r in table_performances.all()])
-    
-    if df_c.empty:
-        return pd.DataFrame(), pd.DataFrame()
-        
-    # Si la colonne Matricule n'est pas encore détectée par le cache, on la crée proprement
+    if df_c.empty: return pd.DataFrame(), pd.DataFrame()
     if "Matricule" not in df_c.columns: df_c["Matricule"] = ""
     if not df_p.empty and "Matricule" not in df_p.columns: df_p["Matricule"] = ""
-    
-    if df_p.empty or "Nom" not in df_p.columns:
-        return df_c, pd.DataFrame()
-        
-    # Fusion sécurisée sur le 'Nom' (pour matcher avec AXISA sur tes captures)
-    # On supprime la colonne Matricule de la table performance avant la fusion pour éviter les doublons de colonnes vides
-    if "Matricule" in df_p.columns:
-        df_p = df_p.drop(columns=["Matricule"])
-        
+    if df_p.empty or "Nom" not in df_p.columns: return df_c, pd.DataFrame()
+    if "Matricule" in df_p.columns: df_p = df_p.drop(columns=["Matricule"])
     df_global = pd.merge(df_p, df_c, on="Nom", how="left")
     return df_c, df_global
 
@@ -124,7 +114,7 @@ page = st.sidebar.radio("Menu", ["📊 Dashboard & Projections", "📤 Importer 
 df_collabs, df_historique = load_airtable_data()
 
 if df_collabs.empty:
-    st.warning("⚠️ Votre table 'Collaborateurs' est vide ou en cours de chargement dans Airtable.")
+    st.warning("⚠️ Votre table 'Collaborateurs' est vide.")
     st.stop()
 
 # --- PAGE : DASHBOARD ---
@@ -132,17 +122,19 @@ if page == "📊 Dashboard & Projections":
     st.subheader("🎯 Suivi et Atterrissage Budgétaire")
     
     if df_historique.empty or "Objectif" not in df_historique.columns:
-        st.info("💡 Aucune donnée de performance trouvée. Utilisez l'onglet d'importation.")
+        st.info("💡 Aucune donnée de performance. Utilisez l'onglet d'importation.")
     else:
         res = df_historique.apply(calculer_ligne, axis=1)
         df_historique['TR'] = [r[0] for r in res]
         df_historique['Atteinte'] = [r[1] for r in res]
         df_historique['À Verser (€)'] = [r[2] for r in res]
-        
         df_historique['Nom du Mois'] = df_historique['Mois'].map(NOM_DES_MOIS)
+        
         dernier_mois = int(df_historique['Mois'].max())
         
-        df_synthese = df_historique.groupby(['Nom', 'Prénom', 'Courbe', 'Périodicité', 'Prime Target 100%']).agg({'À Verser (€)': 'sum'}).reset_index()
+        df_synthese = df_historique.groupby(['Nom', 'Prénom', 'Courbe', 'Périodicité', 'Prime Target 100%']).agg({
+            'À Verser (€)': 'sum', 'Objectif': 'mean', 'Réalisation': 'mean', 'TR': 'mean'
+        }).reset_index()
         
         projections = []
         for idx, row in df_synthese.iterrows():
@@ -160,54 +152,117 @@ if page == "📊 Dashboard & Projections":
                 
         df_synthese["Atterrissage Décembre Estimé (€)"] = projections
         
-        # KPIS
-        k1, k2, k3 = st.columns(3)
+        k1, k2, k3, k4 = st.columns(4)
         k1.metric("Dernier Mois Traité", NOM_DES_MOIS.get(dernier_mois, str(dernier_mois)))
         k2.metric("Total Versé YTD", f"{df_synthese['À Verser (€)'].sum():,.2f} €")
         k3.metric("Atterrissage Annuel Estimé", f"{df_synthese['Atterrissage Décembre Estimé (€)'].sum():,.2f} €")
+        k4.metric("Taux Réalisation Moyen Équipe", f"{df_synthese['TR'].mean() * 100:.1f} %")
         
-        # Pivot Table
-        df_pivot = df_historique.pivot_table(index=['Nom', 'Prénom', 'Courbe', 'Périodicité'], columns='Nom du Mois', values='À Verser (€)', aggfunc='sum').fillna(0)
-        df_pivot = df_pivot.reset_index()
+        # Focus Analyse Individuelle
+        st.write("---")
+        st.markdown("### 🔍 Focus Analyse Individuelle")
+        sales_selectionne = st.selectbox("Sélectionner un collaborateur :", df_synthese['Nom'].unique())
+        df_sales = df_historique[df_historique['Nom'] == sales_selectionne].sort_values(by="Mois")
         
-        df_final = pd.merge(df_pivot, df_synthese[['Nom', 'Atterrissage Décembre Estimé (€)']], on='Nom')
-        
-        st.write("")
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            st.markdown(f"**Indicateurs pour {sales_selectionne} :**")
+            for _, r in df_sales.iterrows():
+                st.info(f"**{r['Nom du Mois']}** : \n"
+                        f"* Objectif : {r['Objectif']:,.2f} € | Réal : {r['Réalisation']:,.2f} €\n"
+                        f"* **Taux d'Atteinte : {r['TR']*100:.1f} %** | Variable : {r['À Verser (€)']:,.2f} €")
+        with col2:
+            st.markdown("**Comparatif Graphique Objectif vs Réalisation**")
+            st.bar_chart(df_sales.set_index('Nom du Mois')[['Objectif', 'Réalisation']])
+            
+        # Tableau Global
+        st.write("---")
         st.markdown("### 📋 Grand Tableau de Bord Chronologique")
+        df_pivot = df_historique.pivot_table(index=['Nom', 'Prénom', 'Courbe', 'Périodicité'], columns='Nom du Mois', values='À Verser (€)', aggfunc='sum').fillna(0).reset_index()
+        df_final = pd.merge(df_pivot, df_synthese[['Nom', 'Objectif', 'Réalisation', 'TR', 'Atterrissage Décembre Estimé (€)']], on='Nom')
+        df_final = df_final.rename(columns={'Objectif': 'Ø Objectif (€)', 'Réalisation': 'Ø Réalisation (€)', 'TR': 'Ø Taux Réal (%)'})
         
-        formats = {col: '{:,.2f} €' for col in df_final.columns if any(m in col for m in ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre','Estimé'])}
-        
+        formats = {}
+        for col in df_final.columns:
+            if 'Taux' in col: formats[col] = lambda x: f"{x*100:.1f} %"
+            elif any(m in col for m in ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre','Estimé','Objectif','Réalisation']):
+                formats[col] = '{:,.2f} €'
+                
         try:
             st.dataframe(df_final.style.format(formats).background_gradient(cmap="Blues", subset=[c for c in df_final.columns if any(char.isdigit() for char in c)]), use_container_width=True)
         except:
             st.dataframe(df_final.style.format(formats), use_container_width=True)
 
-# --- PAGE : IMPORTER ---
+# --- PAGE : IMPORTER (MISE À JOUR MULTI-MOIS) ---
 elif page == "📤 Importer les données":
-    st.subheader("📥 Charger un mois de performance")
-    mois_select = st.slider("Mois de l'import", 1, 12, 4)
+    st.subheader("📥 Centralisation des Imports (Simple ou Multi-mois)")
+    st.markdown("""
+    💡 **Nouveauté** : Vous pouvez importer plusieurs mois d'un coup. Le fichier généré ci-dessous contient 
+    automatiquement des lignes pour chaque commercial, du **Mois 1 (Janvier) au mois actuel**. 
+    Remplissez simplement les lignes des mois concernés et laissez les autres à 0 ou supprimez-les.
+    """)
     
-    mask_data = {"Nom": df_collabs["Nom"].tolist(), "Prénom": df_collabs["Prénom"].tolist(), "Objectif": [0]*len(df_collabs), "Réalisation": [0]*len(df_collabs)}
+    # Génération intelligente du masque multi-lignes (Mois 1 jusqu'au mois actuel)
+    mois_actuel = datetime.now().month
+    mask_rows = []
+    for _, col in df_collabs.iterrows():
+        for m in range(1, mois_actuel + 1):
+            mask_rows.append({
+                "Nom": col["Nom"],
+                "Prénom": col["Prénom"],
+                "Mois (Chiffre de 1 à 12)": m,
+                "Objectif": 0.0,
+                "Réalisation": 0.0
+            })
+            
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine='xlsxwriter') as w:
-        pd.DataFrame(mask_data).to_excel(w, index=False)
+        pd.DataFrame(mask_rows).to_excel(w, index=False)
         
-    st.download_button(f"📥 Télécharger le masque ({NOM_DES_MOIS[mois_select]})", data=buf.getvalue(), file_name=f"masque_mois_{mois_select}.xlsx")
+    st.download_button("📥 Télécharger le nouveau Masque Multi-mois (Excel)", data=buf.getvalue(), file_name="masque_multi_mois_performances.xlsx")
     
-    file = st.file_uploader("Déposez le fichier Excel complété", type=["xlsx"])
-    if file and st.button("💾 Sauvegarder dans Airtable"):
+    st.write("---")
+    file = st.file_uploader("Déposez le fichier Excel complété (Multi-mois ou mensuel)", type=["xlsx"])
+    
+    if file and st.button("💾 Sauvegarder toutes les données dans Airtable"):
         df_up = pd.read_excel(file)
-        records = []
-        for _, row in df_up.iterrows():
-            records.append({
-                "Nom": str(row["Nom"]),
-                "Mois": int(mois_select),
-                "Objectif": float(row["Objectif"]),
-                "Réalisation": float(row["Réalisation"])
-            })
-        table_performances.batch_create(records)
-        st.cache_data.clear()
-        st.success(f"🎉 Données enregistrées avec succès pour {NOM_DES_MOIS[mois_select]} !")
+        
+        # Gestion de la flexibilité des noms de colonnes
+        if "Mois" in df_up.columns and "Mois (Chiffre de 1 à 12)" not in df_up.columns:
+            df_up = df_up.rename(columns={"Mois": "Mois (Chiffre de 1 à 12)"})
+            
+        required_cols = ["Nom", "Mois (Chiffre de 1 à 12)", "Objectif", "Réalisation"]
+        
+        if not all(c in df_up.columns for c in required_cols):
+            st.error(f"⚠️ Le fichier doit contenir au minimum les colonnes : {', '.join(required_cols)}")
+        else:
+            records = []
+            for idx, row in df_up.iterrows():
+                try:
+                    m = int(row["Mois (Chiffre de 1 à 12)"])
+                    obj = float(row["Objectif"])
+                    real = float(row["Réalisation"])
+                    
+                    # On ignore les lignes restées à 0 pour ne pas polluer Airtable inutilement
+                    if obj == 0.0 and real == 0.0:
+                        continue
+                        
+                    if 1 <= m <= 12:
+                        records.append({
+                            "Nom": str(row["Nom"]),
+                            "Mois": m,
+                            "Objectif": obj,
+                            "Réalisation": real
+                        })
+                except:
+                    continue
+            
+            if records:
+                table_performances.batch_create(records)
+                st.cache_data.clear()
+                st.success(f"🎉 Succès ! {len(records)} lignes de performances ont été injectées dans Airtable.")
+            else:
+                st.warning("⚠️ Aucune donnée modifiée détectée (toutes les lignes étaient à 0).")
 
 # --- PAGE : LISTE ---
 elif page == "👥 Liste des Équipes":
