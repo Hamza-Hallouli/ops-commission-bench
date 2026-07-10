@@ -98,7 +98,7 @@ def calculer_ligne(row):
     except:
         return 0.0, 0.0, 0.0
 
-# --- CHARGEMENT SÉCURISÉ DES DONNÉES (BLINDÉ & CACHE 24H) ---
+# --- CHARGEMENT SÉCURISÉ DES DONNÉES (FULL MATRICULE) ---
 @st.cache_data(ttl=86400)
 def load_airtable_data():
     try:
@@ -110,25 +110,37 @@ def load_airtable_data():
 
     if df_c.empty: return pd.DataFrame(), pd.DataFrame()
 
-    for col in ["Team", "Manager", "Courbe", "Périodicité", "Nom", "Prénom", "Matricule"]:
+    # Initialisation des colonnes critiques pour les Collaborateurs
+    for col in ["Matricule", "Team", "Manager", "Courbe", "Périodicité", "Nom", "Prénom"]:
         if col not in df_c.columns: df_c[col] = "Non assigné"
         df_c[col] = df_c[col].fillna("Non assigné")
 
     if "Prime Target 100%" not in df_c.columns: df_c["Prime Target 100%"] = 0.0
     df_c["Prime Target 100%"] = df_c["Prime Target 100%"].fillna(0.0)
 
-    # Nettoyage strict des noms (Tout en majuscule, sans espaces)
+    # Nettoyage absolu des clés
+    df_c["Matricule"] = df_c["Matricule"].astype(str).str.strip()
     df_c["Nom"] = df_c["Nom"].astype(str).str.strip().str.upper()
 
-    if df_p.empty or "Nom" not in df_p.columns: return df_c, pd.DataFrame()
+    if df_p.empty or "Matricule" not in df_p.columns: 
+        st.warning("⚠️ La table Performances est vide ou ne contient pas de colonne 'Matricule'.")
+        return df_c, pd.DataFrame()
 
-    for c in ["Prénom", "Courbe", "Périodicité", "Prime Target 100%", "Team", "Manager", "Matricule"]:
+    df_p["Matricule"] = df_p["Matricule"].astype(str).str.strip()
+
+    # Nettoyage de la table Performance : on supprime tout ce qui est descriptif
+    # pour forcer l'outil à prendre la vérité absolue de la table Collaborateurs
+    colonnes_a_purger = ["Prénom", "Nom", "Courbe", "Périodicité", "Prime Target 100%", "Team", "Manager"]
+    for c in colonnes_a_purger:
         if c in df_p.columns: df_p = df_p.drop(columns=[c])
 
-    # Nettoyage strict pour la table perf
-    df_p["Nom"] = df_p["Nom"].astype(str).str.strip().str.upper()
+    # LA FUSION ULTIME : Uniquement basée sur le Matricule
+    df_global = pd.merge(df_p, df_c, on="Matricule", how="left")
+    
+    # Nettoyage des objectifs pour éviter les bugs mathématiques
+    df_global['Objectif'] = pd.to_numeric(df_global.get('Objectif', 0), errors='coerce').fillna(0.0)
+    df_global['Réalisation'] = pd.to_numeric(df_global.get('Réalisation', 0), errors='coerce').fillna(0.0)
 
-    df_global = pd.merge(df_p, df_c, on="Nom", how="left")
     return df_c, df_global
 
 df_collabs, df_historique = load_airtable_data()
@@ -157,8 +169,9 @@ if not df_historique.empty and "Objectif" in df_historique.columns:
 if page == "📊 Dashboard & Projections":
     st.sidebar.markdown("---")
     st.sidebar.subheader("🎛️ Filtres Globaux")
-    team_filtre = st.sidebar.selectbox("Team :", ["Toutes"] + list(df_collabs["Team"].unique()))
-    manager_filtre = st.sidebar.selectbox("Manager :", ["Tous"] + list(df_collabs["Manager"].unique()))
+    # Tri alphabétique des listes déroulantes
+    team_filtre = st.sidebar.selectbox("Team :", ["Toutes"] + sorted(list(df_collabs["Team"].unique())))
+    manager_filtre = st.sidebar.selectbox("Manager :", ["Tous"] + sorted(list(df_collabs["Manager"].unique())))
 
     df_visu = df_historique.copy()
     if not df_visu.empty:
@@ -168,7 +181,7 @@ if page == "📊 Dashboard & Projections":
     if df_visu.empty:
         st.info("💡 Aucune donnée de performance enregistrée pour ces filtres.")
     else:
-        df_synthese = df_visu.groupby(['Nom', 'Prénom', 'Courbe', 'Périodicité', 'Prime Target 100%', 'Team', 'Manager']).agg({
+        df_synthese = df_visu.groupby(['Matricule', 'Nom', 'Prénom', 'Courbe', 'Périodicité', 'Prime Target 100%', 'Team', 'Manager']).agg({
             'À Verser (€)': 'sum', 'Objectif': 'sum', 'Réalisation': 'sum'
         }).reset_index()
         df_synthese['TR Moyen (%)'] = df_synthese['Réalisation'] / df_synthese['Objectif']
@@ -177,7 +190,7 @@ if page == "📊 Dashboard & Projections":
         for idx, row in df_synthese.iterrows():
             deja_paye = row['À Verser (€)']
             target_annuelle = row['Prime Target 100%']
-            df_sub = df_visu[df_visu['Nom'] == row['Nom']]
+            df_sub = df_visu[df_visu['Matricule'] == row['Matricule']]
             parts_ecoulees = 0.0
             for p in df_sub['Période'].unique():
                 p_str = str(p).strip()
@@ -197,7 +210,8 @@ if page == "📊 Dashboard & Projections":
 
         st.write("---")
         st.markdown("### 🔍 Focus Analyse Individuelle & Méthodes de calcul")
-        sales_selectionne = st.selectbox("Sélectionner un collaborateur :", df_synthese['Nom'].unique())
+        # Sélection par Nom (trié), mais on pourrait ajouter le Matricule pour être encore plus précis
+        sales_selectionne = st.selectbox("Sélectionner un collaborateur :", sorted(df_synthese['Nom'].unique()))
         df_sales = df_visu[df_visu['Nom'] == sales_selectionne].sort_values(by="Période")
 
         col1, col2 = st.columns([1, 2])
@@ -219,15 +233,15 @@ if page == "📊 Dashboard & Projections":
 
         st.write("---")
         st.markdown("### 📋 Grand Tableau de Bord Chronologique (Hybride)")
-        df_pivot = df_visu.pivot_table(index=['Nom', 'Prénom', 'Team', 'Manager', 'Courbe', 'Périodicité'], columns='Période', values='À Verser (€)', aggfunc='sum').fillna(0).reset_index()
+        df_pivot = df_visu.pivot_table(index=['Matricule', 'Nom', 'Prénom', 'Team', 'Manager', 'Courbe', 'Périodicité'], columns='Période', values='À Verser (€)', aggfunc='sum').fillna(0).reset_index()
         cols_metiers = [c for c in df_pivot.columns if c in ORDRE_PERIODES]
         cols_metiers_triees = sorted(cols_metiers, key=lambda x: ORDRE_PERIODES.index(x))
-        cols_exotiques = [c for c in df_pivot.columns if c not in ORDRE_PERIODES and c not in ['Nom', 'Prénom', 'Team', 'Manager', 'Courbe', 'Périodicité']]
+        cols_exotiques = [c for c in df_pivot.columns if c not in ORDRE_PERIODES and c not in ['Matricule', 'Nom', 'Prénom', 'Team', 'Manager', 'Courbe', 'Périodicité']]
         cols_metiers_totale = cols_metiers_triees + cols_exotiques
-        cols_fixes = ['Nom', 'Prénom', 'Team', 'Manager', 'Courbe', 'Périodicité']
+        cols_fixes = ['Matricule', 'Nom', 'Prénom', 'Team', 'Manager', 'Courbe', 'Périodicité']
         df_pivot = df_pivot[cols_fixes + cols_metiers_totale]
 
-        df_final = pd.merge(df_pivot, df_synthese[['Nom', 'Objectif', 'Réalisation', 'TR Moyen (%)', 'Atterrissage Décembre Estimé (€)']], on='Nom')
+        df_final = pd.merge(df_pivot, df_synthese[['Matricule', 'Objectif', 'Réalisation', 'TR Moyen (%)', 'Atterrissage Décembre Estimé (€)']], on='Matricule')
         df_final = df_final.rename(columns={'Objectif': 'Cumul Objectifs (€)', 'Réalisation': 'Cumul Réalisations (€)'})
         formats = {col: ('{:,.2f} €' if 'Moyen' not in col else lambda x: f"{x*100:.1f} %") for col in df_final.columns if col not in cols_fixes}
         try:
@@ -272,7 +286,15 @@ elif page == "📤 Importer les données":
         periodicite = str(col["Périodicité"]).strip()
         periodes_target = ["Q1", "Q2", "Q3", "Q4"] if periodicite == "Trimestriel" else [str(i) for i in range(1, 13)]
         for p in periodes_target:
-            mask_rows.append({"Nom": col["Nom"], "Prénom": col["Prénom"], "Période (Mois ou Q)": p, "Objectif": 0.0, "Réalisation": 0.0})
+            # On inclut le Matricule dans le template Excel !
+            mask_rows.append({
+                "Matricule": col["Matricule"], 
+                "Nom": col["Nom"], 
+                "Prénom": col["Prénom"], 
+                "Période (Mois ou Q)": p, 
+                "Objectif": 0.0, 
+                "Réalisation": 0.0
+            })
 
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine='xlsxwriter') as w:
@@ -293,7 +315,8 @@ elif page == "📤 Importer les données":
                 p = str(row["Période (Mois ou Q)"]).strip()
                 if float(row["Objectif"]) == 0.0 and float(row["Réalisation"]) == 0.0: continue
                 records.append({
-                    "Nom": str(row["Nom"]),
+                    "Matricule": str(row.get("Matricule", "")).strip(),
+                    "Nom": str(row.get("Nom", "")).strip(),
                     "Période": p,
                     "Objectif": float(row["Objectif"]),
                     "Réalisation": float(row["Réalisation"])
@@ -314,4 +337,5 @@ elif page == "📤 Importer les données":
 # --- PAGE 4 : LISTE DES ÉQUIPES ---
 elif page == "👥 Liste des Équipes":
     st.title("👥 Référentiel Collaborateurs")
-    st.dataframe(df_collabs[['Matricule', 'Nom', 'Prénom', 'Team', 'Manager', 'Courbe', 'Périodicité', 'Prime Target 100%']], use_container_width=True)
+    # Affichage du Matricule en première position pour vérifier que tout est propre
+    st.dataframe(df_collabs[['Matricule', 'Nom', 'Prénom', 'Team', 'Manager', 'Courbe', 'Périodicité', 'Prime Target 100%']].sort_values(by="Nom"), use_container_width=True)
