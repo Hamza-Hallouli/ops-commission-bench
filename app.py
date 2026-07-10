@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from pyairtable import Api
 import io
+import requests  # Ajouté pour capturer l'erreur exacte d'Airtable
 from datetime import datetime
 
 # Config de l'application
@@ -10,26 +11,28 @@ st.set_page_config(page_title="Ops Variable Engine", page_icon="💎", layout="w
 # Connexion sécurisée
 TOKEN_AIRTABLE = st.secrets["AIRTABLE_API_KEY"]
 BASE_ID_AIRTABLE = st.secrets["AIRTABLE_BASE_ID"]
+ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "ops2026")
 
 api = Api(TOKEN_AIRTABLE)
 table_collaborateurs = api.table(BASE_ID_AIRTABLE, "Collaborateurs")
 table_performances = api.table(BASE_ID_AIRTABLE, "Performances")
 
-# Ordre d'affichage logique des périodes
-ORDRE_PERIODES = [
-    "1", "2", "3", "Q1", 
-    "4", "5", "6", "Q2", 
-    "7", "8", "9", "Q3", 
-    "10", "11", "12", "Q4"
-]
+ORDRE_PERIODES = ["1", "2", "3", "Q1", "4", "5", "6", "Q2", "7", "8", "9", "Q3", "10", "11", "12", "Q4"]
 
-# --- MOTEURS DE CALCUL DE COURBE CORRIGÉS SELON TES GRILLES ---
+# --- INITIALISATION DE LA SESSION DE CONNEXION ---
+if "logged_in" not in st.session_state:
+    st.session_state["logged_in"] = False
+    st.session_state["role"] = None
+    st.session_state["user_nom"] = None
+    st.session_state["user_team"] = None
+
+# --- MOTEURS DE CALCUL DE COURBE ---
 def calcul_standard(tr):
     if tr < 0.50: return tr * 0.40
     elif tr < 0.90: return tr * tr * 0.80
     elif tr < 1.00: return tr * tr * 0.95
     elif tr < 1.91: return tr * tr * 1.10
-    else: return 4.00  # Cap à 400% au-delà de 191%
+    else: return 4.00 
 
 def calcul_manager(tr):
     if tr < 0.30: return 0.0
@@ -48,7 +51,7 @@ def calcul_manager(tr):
     elif tr < 1.30: return tr * 1.50
     elif tr < 1.35: return tr * 1.60
     elif tr < 1.45: return tr * 1.70
-    else: return 2.50  # Cap à 250% au-delà de 145%
+    else: return 2.50 
 
 def calcul_manager_is(tr):
     if tr < 0.70: return tr * 0.40
@@ -61,7 +64,7 @@ def calcul_manager_is(tr):
     elif tr < 1.10: return tr * 1.20
     elif tr < 1.20: return tr * 1.25
     elif tr < 1.55: return tr * 1.30
-    else: return 2.00  # Cap à 200% au-delà de 155%
+    else: return 2.00 
 
 def calcul_inside_sales(tr):
     if tr < 0.70: return tr * 0.40
@@ -73,9 +76,8 @@ def calcul_inside_sales(tr):
     elif tr < 1.39: return tr * 1.35
     elif tr < 1.50: return tr * 1.40
     elif tr < 1.72: return tr * 1.50
-    else: return 2.50  # Cap à 250% au-delà de 172%
+    else: return 2.50 
 
-# --- CALCUL DES LIGNES AVEC PRORATISATION TARGET ANNUELLE ---
 def calculer_ligne(row):
     try:
         obj = float(row.get('Objectif', 0))
@@ -84,12 +86,10 @@ def calculer_ligne(row):
         courbe = str(row.get('Courbe', '')).strip().lower()
         periode = str(row.get('Période', '')).strip()
         
-        if obj <= 0 or pd.isna(row.get('Période')) or periode in ["", "None", "nan", "Non assigné"]: 
-            return 0.0, 0.0, 0.0
+        if obj <= 0 or pd.isna(row.get('Période')) or periode in ["", "None", "nan", "Non assigné"]: return 0.0, 0.0, 0.0
             
         tr = real / obj
         
-        # Dispatching vers le bon moteur
         if courbe in ["standard", "standard curve"]: atteinte = calcul_standard(tr)
         elif courbe in ["manager", "plan sales manager"]: atteinte = calcul_manager(tr)
         elif courbe in ["manager is"]: atteinte = calcul_manager_is(tr)
@@ -109,54 +109,109 @@ def load_airtable_data():
     df_c = pd.DataFrame([r["fields"] for r in table_collaborateurs.all()])
     df_p = pd.DataFrame([r["fields"] for r in table_performances.all()])
     if df_c.empty: return pd.DataFrame(), pd.DataFrame()
-    for col in ["Team", "Manager", "Courbe", "Périodicité", "Nom", "Prénom"]:
+    
+    for col in ["Team", "Manager", "Courbe", "Périodicité", "Nom", "Prénom", "Matricule", "Email", "Mot de passe"]:
         if col not in df_c.columns: df_c[col] = "Non assigné"
         df_c[col] = df_c[col].fillna("Non assigné")
+        
     if "Prime Target 100%" not in df_c.columns: df_c["Prime Target 100%"] = 0.0
     df_c["Prime Target 100%"] = df_c["Prime Target 100%"].fillna(0.0)
     if df_p.empty or "Nom" not in df_p.columns: return df_c, pd.DataFrame()
-    for c in ["Prénom", "Courbe", "Périodicité", "Prime Target 100%", "Team", "Manager", "Matricule"]:
+    
+    for c in ["Prénom", "Courbe", "Périodicité", "Prime Target 100%", "Team", "Manager", "Matricule", "Email", "Mot de passe"]:
         if c in df_p.columns: df_p = df_p.drop(columns=[c])
+    
     df_global = pd.merge(df_p, df_c, on="Nom", how="left")
     return df_c, df_global
 
-# --- UI LOGIQUE ---
-st.title("💎 Ops Compensation Intelligence")
-page = st.sidebar.radio("Menu", ["📊 Dashboard & Projections", "🧮 Simulateur & Courbes", "📤 Importer les données", "👥 Liste des Équipes"])
-
 df_collabs, df_historique = load_airtable_data()
 
-if df_collabs.empty:
-    st.warning("⚠️ La table 'Collaborateurs' est vide.")
+# --- PORTAIL DE CONNEXION ---
+if not st.session_state["logged_in"]:
+    st.markdown("<h1 style='text-align: center;'>💎 Ops Compensation</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center;'>Veuillez vous connecter pour accéder à votre portail de commissionnement.</p>", unsafe_allow_html=True)
+    
+    col_g, col_mid, col_d = st.columns([1, 1.5, 1])
+    with col_mid:
+        with st.form("formulaire_connexion"):
+            email_input = st.text_input("Adresse Email ou Identifiant")
+            password_input = st.text_input("Mot de passe", type="password")
+            submit_button = st.form_submit_button("Se connecter", use_container_width=True)
+            
+            if submit_button:
+                if df_collabs.empty:
+                    st.error("Base de données en cours de chargement ou vide.")
+                elif email_input.strip().lower() == "admin" and password_input == ADMIN_PASSWORD:
+                    st.session_state["logged_in"] = True
+                    st.session_state["role"] = "Admin"
+                    st.session_state["user_nom"] = "Admin Ops"
+                    st.rerun()
+                else:
+                    match = df_collabs[(df_collabs["Email"].str.strip().str.lower() == email_input.strip().lower()) & 
+                                       (df_collabs["Mot de passe"] == password_input)]
+                    if not match.empty:
+                        user = match.iloc[0]
+                        st.session_state["logged_in"] = True
+                        st.session_state["user_nom"] = user["Nom"]
+                        st.session_state["user_team"] = user["Team"]
+                        if (df_collabs["Manager"] == user["Nom"]).any():
+                            st.session_state["role"] = "Manager"
+                        else:
+                            st.session_state["role"] = "Sales"
+                        st.rerun()
+                    else:
+                        st.error("Identifiants incorrects. Veuillez réessayer.")
     st.stop()
 
-# --- PAGE : DASHBOARD ---
-if page == "📊 Dashboard & Projections":
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("🎛️ Filtres")
-    team_filtre = st.sidebar.selectbox("Team :", ["Toutes"] + list(df_collabs["Team"].unique()))
-    manager_filtre = st.sidebar.selectbox("Manager :", ["Tous"] + list(df_collabs["Manager"].unique()))
+# --- SI CONNECTÉ : LOGIQUE DE L'APPLICATION ---
+role = st.session_state["role"]
+user_nom = st.session_state["user_nom"]
 
-    if df_historique.empty or "Objectif" not in df_historique.columns:
-        st.info("💡 Aucune donnée de performance enregistrée. Allez dans l'onglet d'importation.")
-    else:
-        df_historique = df_historique.dropna(subset=['Période'])
-        df_historique['Période'] = df_historique['Période'].astype(str).str.strip()
-        df_historique = df_historique[~df_historique['Période'].isin(["", "None", "nan", "Non assigné"])]
-        
+if role == "Admin":
+    pages_dispos = ["📊 Dashboard & Projections", "🧮 Simulateur & Courbes", "📤 Importer les données", "👥 Liste des Équipes"]
+else:
+    pages_dispos = ["📊 Dashboard & Projections", "🧮 Simulateur & Courbes"]
+
+page = st.sidebar.radio("Menu", pages_dispos)
+
+st.sidebar.markdown("---")
+st.sidebar.success(f"👤 **{user_nom}** ({role})")
+if st.sidebar.button("Se déconnecter", use_container_width=True):
+    st.session_state.clear()
+    st.rerun()
+
+if not df_historique.empty and "Objectif" in df_historique.columns:
+    df_historique = df_historique.dropna(subset=['Période'])
+    df_historique['Période'] = df_historique['Période'].astype(str).str.strip()
+    df_historique = df_historique[~df_historique['Période'].isin(["", "None", "nan", "Non assigné"])]
+    
+    if not df_historique.empty:
         res = df_historique.apply(calculer_ligne, axis=1)
         df_historique['TR'] = [r[0] for r in res]
         df_historique['Atteinte'] = [r[1] for r in res]
         df_historique['À Verser (€)'] = [r[2] for r in res]
-        
-        df_visu = df_historique.copy()
+
+df_visu = df_historique.copy()
+if role == "Sales":
+    df_visu = df_visu[df_visu["Nom"] == user_nom]
+elif role == "Manager":
+    df_visu = df_visu[(df_visu["Manager"] == user_nom) | (df_visu["Nom"] == user_nom)]
+
+# --- PAGE : DASHBOARD ---
+if page == "📊 Dashboard & Projections":
+    if role == "Admin":
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("🎛️ Filtres Globaux")
+        team_filtre = st.sidebar.selectbox("Team :", ["Toutes"] + list(df_collabs["Team"].unique()))
+        manager_filtre = st.sidebar.selectbox("Manager :", ["Tous"] + list(df_collabs["Manager"].unique()))
         if team_filtre != "Toutes": df_visu = df_visu[df_visu["Team"] == team_filtre]
         if manager_filtre != "Tous": df_visu = df_visu[df_visu["Manager"] == manager_filtre]
-            
-        if df_visu.empty:
-            st.warning("Aucune donnée disponible pour ces filtres.")
-            st.stop()
 
+    st.title("📊 Votre Suivi de Performance")
+
+    if df_visu.empty:
+        st.info("Aucune donnée disponible pour le moment.")
+    else:
         df_synthese = df_visu.groupby(['Nom', 'Prénom', 'Courbe', 'Périodicité', 'Prime Target 100%', 'Team', 'Manager']).agg({
             'À Verser (€)': 'sum', 'Objectif': 'sum', 'Réalisation': 'sum'
         }).reset_index()
@@ -178,94 +233,89 @@ if page == "📊 Dashboard & Projections":
             
         df_synthese["Atterrissage Décembre Estimé (€)"] = projections
         
-        # BANDEAU KPIS
         k1, k2, k3 = st.columns(3)
-        k1.metric("Total Variables Générés YTD", f"{df_synthese['À Verser (€)'].sum():,.2f} €")
-        k2.metric("Atterrissage Budgétaire Annuel", f"{df_synthese['Atterrissage Décembre Estimé (€)'].sum():,.2f} €")
-        k3.metric("Ø Taux de Réalisation Équipe", f"{df_synthese['TR Moyen (%)'].mean() * 100:.1f} %")
+        titre_kpi = "Votre Taux d'Atteinte" if role == "Sales" else "Taux de Réalisation Équipe"
+        k1.metric("Variables Générés YTD", f"{df_synthese['À Verser (€)'].sum():,.2f} €")
+        k2.metric("Atterrissage Estimé Annuel", f"{df_synthese['Atterrissage Décembre Estimé (€)'].sum():,.2f} €")
+        k3.metric(titre_kpi, f"{df_synthese['TR Moyen (%)'].mean() * 100:.1f} %")
         
-        # --- FOCUS ANALYSE INDIVIDUELLE ---
         st.write("---")
-        st.markdown("### 🔍 Focus Analyse Individuelle & Méthodes de calcul")
-        sales_selectionne = st.selectbox("Sélectionner un collaborateur :", df_synthese['Nom'].unique())
+        st.markdown("### 🔍 Focus Analyse Individuelle")
+        
+        if role == "Sales":
+            sales_selectionne = user_nom 
+        else:
+            sales_selectionne = st.selectbox("Sélectionner un collaborateur :", df_synthese['Nom'].unique())
+            
         df_sales = df_visu[df_visu['Nom'] == sales_selectionne].sort_values(by="Période")
         
         col1, col2 = st.columns([1, 2])
         with col1:
             st.markdown(f"**Détails de l'année pour {sales_selectionne} :**")
             for _, r in df_sales.iterrows():
-                st.info(f"**Période : {r['Période']}** \n"
-                        f"* Objectif : {r['Objectif']:,.2f} € | Réal : {r['Réalisation']:,.2f} €\n"
-                        f"* **Taux d'Atteinte (TR) : {r['TR']*100:.1f} %** \n"
-                        f"* **Variable Génré : {r['À Verser (€)']:,.2f} €**")
+                st.info(f"**Période : {r['Période']}** \n* Objectif : {r['Objectif']:,.2f} € | Réal : {r['Réalisation']:,.2f} €\n* **TR : {r['TR']*100:.1f} %** | Variable : **{r['À Verser (€)']:,.2f} €**")
                 
-                with st.expander(f"⚙️ Décomposition mathématique détaillée ({r['Période']})"):
+                with st.expander(f"⚙️ Décomposition mathématique ({r['Période']})"):
                     base_diviseur = 4.0 if "Q" in str(r['Période']) else 12.0
                     target_prorata = r['Prime Target 100%'] / base_diviseur
-                    st.write(f"1. **Enveloppe Période** : {r['Prime Target 100%']:,.2f} € (Annuel) / {int(base_diviseur)} = **{target_prorata:,.2f} €**")
-                    st.write(f"2. **Taux Réalisation (TR)** : {r['Réalisation']:,.2f} € / {r['Objectif']:,.2f} € = **{r['TR']*100:.1f}%**")
-                    st.write(f"3. **Taux d'Atteinte de Courbe** : La formule `{r['Courbe']}` traduit ce TR en un coefficient de **{r['Atteinte']*100:.1f}%** de la prime.")
-                    st.write(f"4. **Calcul Final** : {target_prorata:,.2f} € × {r['Atteinte']*100:.1f}% = **{r['À Verser (€)']:,.2f} €**")
+                    st.write(f"1. **Enveloppe** : {r['Prime Target 100%']:,.2f} € / {int(base_diviseur)} = **{target_prorata:,.2f} €**")
+                    st.write(f"2. **TR** : {r['Réalisation']:,.2f} € / {r['Objectif']:,.2f} € = **{r['TR']*100:.1f}%**")
+                    st.write(f"3. **Multiplicateur Courbe** (`{r['Courbe']}`) = **{r['Atteinte']*100:.1f}%**")
+                    st.write(f"4. **Calcul** : {target_prorata:,.2f} € × {r['Atteinte']*100:.1f}% = **{r['À Verser (€)']:,.2f} €**")
         with col2:
-            st.markdown("**Comparatif Graphique Objectif vs Réalisation**")
+            st.markdown("**Comparatif Objectif vs Réalisation**")
             st.bar_chart(df_sales.set_index('Période')[['Objectif', 'Réalisation']])
             
-        # --- TABLEAU GLOBAL ---
-        st.write("---")
-        st.markdown("### 📋 Grand Tableau de Bord Chronologique (Hybride)")
-        df_pivot = df_visu.pivot_table(index=['Nom', 'Prénom', 'Team', 'Manager', 'Courbe', 'Périodicité'], columns='Période', values='À Verser (€)', aggfunc='sum').fillna(0).reset_index()
-        cols_metiers = [c for c in df_pivot.columns if c in ORDRE_PERIODES]
-        cols_metiers_triees = sorted(cols_metiers, key=lambda x: ORDRE_PERIODES.index(x))
-        cols_exotiques = [c for c in df_pivot.columns if c not in ORDRE_PERIODES and c not in ['Nom', 'Prénom', 'Team', 'Manager', 'Courbe', 'Périodicité']]
-        cols_metiers_totale = cols_metiers_triees + cols_exotiques
-        cols_fixes = ['Nom', 'Prénom', 'Team', 'Manager', 'Courbe', 'Périodicité']
-        df_pivot = df_pivot[cols_fixes + cols_metiers_totale]
-        
-        df_final = pd.merge(df_pivot, df_synthese[['Nom', 'Objectif', 'Réalisation', 'TR Moyen (%)', 'Atterrissage Décembre Estimé (€)']], on='Nom')
-        df_final = df_final.rename(columns={'Objectif': 'Cumul Objectifs (€)', 'Réalisation': 'Cumul Réalisations (€)'})
-        formats = {col: ('{:,.2f} €' if 'Moyen' not in col else lambda x: f"{x*100:.1f} %") for col in df_final.columns if col not in cols_fixes}
-        try:
-            st.dataframe(df_final.style.format(formats).background_gradient(cmap="Blues", subset=cols_metiers_totale), use_container_width=True)
-        except:
-            st.dataframe(df_final.style.format(formats), use_container_width=True)
+        if role in ["Admin", "Manager"]:
+            st.write("---")
+            st.markdown("### 📋 Grand Tableau de Bord Chronologique")
+            df_pivot = df_visu.pivot_table(index=['Nom', 'Prénom', 'Team', 'Manager', 'Courbe', 'Périodicité'], columns='Période', values='À Verser (€)', aggfunc='sum').fillna(0).reset_index()
+            cols_metiers = [c for c in df_pivot.columns if c in ORDRE_PERIODES]
+            cols_metiers_triees = sorted(cols_metiers, key=lambda x: ORDRE_PERIODES.index(x))
+            cols_exotiques = [c for c in df_pivot.columns if c not in ORDRE_PERIODES and c not in ['Nom', 'Prénom', 'Team', 'Manager', 'Courbe', 'Périodicité']]
+            cols_metiers_totale = cols_metiers_triees + cols_exotiques
+            cols_fixes = ['Nom', 'Prénom', 'Team', 'Manager', 'Courbe', 'Périodicité']
+            df_pivot = df_pivot[cols_fixes + cols_metiers_totale]
+            
+            df_final = pd.merge(df_pivot, df_synthese[['Nom', 'Objectif', 'Réalisation', 'TR Moyen (%)', 'Atterrissage Décembre Estimé (€)']], on='Nom')
+            df_final = df_final.rename(columns={'Objectif': 'Cumul Objectifs (€)', 'Réalisation': 'Cumul Réalisations (€)'})
+            formats = {col: ('{:,.2f} €' if 'Moyen' not in col else lambda x: f"{x*100:.1f} %") for col in df_final.columns if col not in cols_fixes}
+            try:
+                st.dataframe(df_final.style.format(formats).background_gradient(cmap="Blues", subset=cols_metiers_totale), use_container_width=True)
+            except:
+                st.dataframe(df_final.style.format(formats), use_container_width=True)
 
 # --- PAGE : SIMULATEUR ---
 elif page == "🧮 Simulateur & Courbes":
-    st.subheader("🧮 Bac à Sable & Simulateur de Variable")
-    
+    st.title("🧮 Simulateur de Variable")
     s_col1, s_col2 = st.columns(2)
     with s_col1:
         st.markdown("### 📐 Paramètres de simulation")
-        courbe_sim = st.selectbox("Sélectionnez le type de plan de courbe :", ["Plan Sales Manager / Manager", "Standard / Standard Curve", "Inside Sales / IS / Standard IS Curve", "Manager IS"])
+        courbe_sim = st.selectbox("Type de plan de courbe :", ["Plan Sales Manager / Manager", "Standard / Standard Curve", "Inside Sales / IS", "Manager IS"])
         target_sim = st.number_input("Package Variable Annuel à 100% (€) :", value=10000, step=1000)
-        p_type = st.radio("Rythme de la période simuler :", ["Mensuelle (1/12)", "Trimestrielle (1/4)"])
-        
+        p_type = st.radio("Rythme de la période :", ["Mensuelle (1/12)", "Trimestrielle (1/4)"])
         base_prime = target_sim / 4.0 if p_type == "Trimestrielle (1/4)" else target_sim / 12.0
-        st.metric("Enveloppe théorique pour cette période :", f"{base_prime:,.2f} €")
+        st.metric("Enveloppe théorique", f"{base_prime:,.2f} €")
         
     with s_col2:
         st.markdown("### 🎯 Performance Fictive")
-        obj_sim = st.number_input("Objectif fixé de la période (€) :", value=50000, step=5000)
+        obj_sim = st.number_input("Objectif fixé (€) :", value=50000, step=5000)
         real_sim = st.number_input("Réalisation envisagée (€) :", value=55000, step=5000)
-        
         if obj_sim > 0:
             tr_sim = real_sim / obj_sim
-            st.write(f"📈 Taux de réalisation ($TR$) simulé : **{tr_sim*100:.1f} %**")
-            
             if "Manager" in courbe_sim and "IS" not in courbe_sim: coeff = calcul_manager(tr_sim)
-            elif "Standard" in courbe_sim and "IS" not in courbe_sim: coeff = calcul_standard(tr_sim)
+            elif "Standard" in courbe_sim: coeff = calcul_standard(tr_sim)
             elif "Manager IS" in courbe_sim: coeff = calcul_manager_is(tr_sim)
             else: coeff = calcul_inside_sales(tr_sim)
             
             prime_finale_sim = base_prime * coeff
-            st.write("---")
             c1, c2 = st.columns(2)
-            c1.metric("Multiplicateur de courbe obtenu", f"{coeff*100:.1f} %")
-            c2.metric("Variable simulé à verser (€)", f"{prime_finale_sim:,.2f} €")
+            c1.metric("TR Simulé", f"{tr_sim*100:.1f} %")
+            c2.metric("Variable simulé", f"{prime_finale_sim:,.2f} €")
 
-# --- PAGES ASSISTANTES ---
-elif page == "📤 Importer les données":
-    st.subheader("📥 Générateur d'Import Multi-Périodes Automatique")
+# --- PAGES OPS / ADMIN UNIQUEMENT ---
+elif page == "📤 Importer les données" and role == "Admin":
+    st.title("📥 Import des Performances")
     mask_rows = []
     for _, col in df_collabs.iterrows():
         periodicite = str(col["Périodicité"]).strip()
@@ -274,10 +324,10 @@ elif page == "📤 Importer les données":
             mask_rows.append({"Nom": col["Nom"], "Prénom": col["Prénom"], "Période (Mois ou Q)": p, "Objectif": 0.0, "Réalisation": 0.0})
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine='xlsxwriter') as w: pd.DataFrame(mask_rows).to_excel(w, index=False)
-    st.download_button("📥 Télécharger le modèle Excel Hybride", data=buf.getvalue(), file_name="gabarit_import_ops.xlsx")
-    st.write("---")
+    st.download_button("📥 Télécharger le modèle", data=buf.getvalue(), file_name="gabarit_import_ops.xlsx")
     file = st.file_uploader("Déposer le fichier Excel", type=["xlsx"])
-    if file and st.button("💾 Sauvegarder et injecter"):
+    
+    if file and st.button("💾 Sauvegarder"):
         df_up = pd.read_excel(file)
         if "Période" in df_up.columns: df_up = df_up.rename(columns={"Période": "Période (Mois ou Q)"})
         records = []
@@ -287,11 +337,17 @@ elif page == "📤 Importer les données":
                 if float(row["Objectif"]) == 0.0 and float(row["Réalisation"]) == 0.0: continue
                 records.append({"Nom": str(row["Nom"]), "Période": p, "Objectif": float(row["Objectif"]), "Réalisation": float(row["Réalisation"])})
             except: continue
+        
+        # --- BLOC D'INSERTION SÉCURISÉ CONTRE LES ERREURS AIRTABLE ---
         if records:
-            table_performances.batch_create(records)
-            st.cache_data.clear()
-            st.success("🎉 Import réussi !")
+            try:
+                table_performances.batch_create(records)
+                st.cache_data.clear()
+                st.success(f"🎉 Import réussi ! {len(records)} lignes ajoutées.")
+            except requests.exceptions.HTTPError as e:
+                st.error("❌ Airtable a refusé l'importation de ces données. Voici l'erreur technique :")
+                st.code(e.response.text)
 
-elif page == "👥 Liste des Équipes":
-    st.subheader("Référentiel Collaborateurs")
-    st.dataframe(df_collabs[['Nom', 'Prénom', 'Team', 'Manager', 'Courbe', 'Périodicité', 'Prime Target 100%']], use_container_width=True)
+elif page == "👥 Liste des Équipes" and role == "Admin":
+    st.title("👥 Référentiel Collaborateurs")
+    st.dataframe(df_collabs[['Nom', 'Prénom', 'Team', 'Manager', 'Courbe', 'Périodicité', 'Prime Target 100%', 'Email', 'Mot de passe']], use_container_width=True)
