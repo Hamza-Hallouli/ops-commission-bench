@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from pyairtable import Api
 import io
-import requests  # Ajouté pour capturer l'erreur exacte d'Airtable
+import requests
 from datetime import datetime
 
 # Config de l'application
@@ -11,20 +11,13 @@ st.set_page_config(page_title="Ops Variable Engine", page_icon="💎", layout="w
 # Connexion sécurisée
 TOKEN_AIRTABLE = st.secrets["AIRTABLE_API_KEY"]
 BASE_ID_AIRTABLE = st.secrets["AIRTABLE_BASE_ID"]
-ADMIN_PASSWORD = st.secrets.get("ADMIN_PASSWORD", "ops2026")
+ADMIN_EMAIL = st.secrets.get("ADMIN_EMAIL", "") # Ton email configuré dans les secrets
 
 api = Api(TOKEN_AIRTABLE)
 table_collaborateurs = api.table(BASE_ID_AIRTABLE, "Collaborateurs")
 table_performances = api.table(BASE_ID_AIRTABLE, "Performances")
 
 ORDRE_PERIODES = ["1", "2", "3", "Q1", "4", "5", "6", "Q2", "7", "8", "9", "Q3", "10", "11", "12", "Q4"]
-
-# --- INITIALISATION DE LA SESSION DE CONNEXION ---
-if "logged_in" not in st.session_state:
-    st.session_state["logged_in"] = False
-    st.session_state["role"] = None
-    st.session_state["user_nom"] = None
-    st.session_state["user_team"] = None
 
 # --- MOTEURS DE CALCUL DE COURBE ---
 def calcul_standard(tr):
@@ -110,7 +103,7 @@ def load_airtable_data():
     df_p = pd.DataFrame([r["fields"] for r in table_performances.all()])
     if df_c.empty: return pd.DataFrame(), pd.DataFrame()
     
-    for col in ["Team", "Manager", "Courbe", "Périodicité", "Nom", "Prénom", "Matricule", "Email", "Mot de passe"]:
+    for col in ["Team", "Manager", "Courbe", "Périodicité", "Nom", "Prénom", "Matricule", "Email"]:
         if col not in df_c.columns: df_c[col] = "Non assigné"
         df_c[col] = df_c[col].fillna("Non assigné")
         
@@ -118,7 +111,7 @@ def load_airtable_data():
     df_c["Prime Target 100%"] = df_c["Prime Target 100%"].fillna(0.0)
     if df_p.empty or "Nom" not in df_p.columns: return df_c, pd.DataFrame()
     
-    for c in ["Prénom", "Courbe", "Périodicité", "Prime Target 100%", "Team", "Manager", "Matricule", "Email", "Mot de passe"]:
+    for c in ["Prénom", "Courbe", "Périodicité", "Prime Target 100%", "Team", "Manager", "Matricule", "Email"]:
         if c in df_p.columns: df_p = df_p.drop(columns=[c])
     
     df_global = pd.merge(df_p, df_c, on="Nom", how="left")
@@ -126,47 +119,46 @@ def load_airtable_data():
 
 df_collabs, df_historique = load_airtable_data()
 
-# --- PORTAIL DE CONNEXION ---
-if not st.session_state["logged_in"]:
+# --- 🔐 CONNEXION AVEC GOOGLE ---
+# Si l'utilisateur n'est pas connecté à Streamlit via Google, on affiche le bouton
+if not st.experimental_user.is_logged_in:
     st.markdown("<h1 style='text-align: center;'>💎 Ops Compensation</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center;'>Veuillez vous connecter pour accéder à votre portail de commissionnement.</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center;'>Veuillez vous connecter avec votre compte Google d'entreprise.</p>", unsafe_allow_html=True)
     
-    col_g, col_mid, col_d = st.columns([1, 1.5, 1])
+    col_g, col_mid, col_d = st.columns([1, 1, 1])
     with col_mid:
-        with st.form("formulaire_connexion"):
-            email_input = st.text_input("Adresse Email ou Identifiant")
-            password_input = st.text_input("Mot de passe", type="password")
-            submit_button = st.form_submit_button("Se connecter", use_container_width=True)
-            
-            if submit_button:
-                if df_collabs.empty:
-                    st.error("Base de données en cours de chargement ou vide.")
-                elif email_input.strip().lower() == "admin" and password_input == ADMIN_PASSWORD:
-                    st.session_state["logged_in"] = True
-                    st.session_state["role"] = "Admin"
-                    st.session_state["user_nom"] = "Admin Ops"
-                    st.rerun()
-                else:
-                    match = df_collabs[(df_collabs["Email"].str.strip().str.lower() == email_input.strip().lower()) & 
-                                       (df_collabs["Mot de passe"] == password_input)]
-                    if not match.empty:
-                        user = match.iloc[0]
-                        st.session_state["logged_in"] = True
-                        st.session_state["user_nom"] = user["Nom"]
-                        st.session_state["user_team"] = user["Team"]
-                        if (df_collabs["Manager"] == user["Nom"]).any():
-                            st.session_state["role"] = "Manager"
-                        else:
-                            st.session_state["role"] = "Sales"
-                        st.rerun()
-                    else:
-                        st.error("Identifiants incorrects. Veuillez réessayer.")
+        if st.button("🚀 Connexion avec Google", use_container_width=True, type="primary"):
+            st.login() # Déclenche l'authentification Google native
     st.stop()
 
-# --- SI CONNECTÉ : LOGIQUE DE L'APPLICATION ---
-role = st.session_state["role"]
-user_nom = st.session_state["user_nom"]
+# --- SI CONNECTÉ : RECONNAISSANCE DU PROFIL ---
+google_email = st.experimental_user.email.strip().lower()
+role = None
+user_nom = None
 
+# 1. Vérification si Admin
+if google_email == ADMIN_EMAIL.strip().lower():
+    role = "Admin"
+    user_nom = "Admin Ops"
+else:
+    # 2. Vérification dans Airtable via l'e-mail Google
+    match = df_collabs[df_collabs["Email"].str.strip().str.lower() == google_email]
+    
+    if match.empty:
+        st.error(f"❌ Accès refusé. L'adresse e-mail **{google_email}** n'est pas répertoriée dans le référentiel des collaborateurs sur Airtable. Contactez votre Ops.")
+        if st.button("Se déconnecter"): st.logout()
+        st.stop()
+        
+    user = match.iloc[0]
+    user_nom = user["Nom"]
+    
+    # Déduction du rôle (Manager ou simple Sales)
+    if (df_collabs["Manager"] == user["Nom"]).any():
+        role = "Manager"
+    else:
+        role = "Sales"
+
+# --- LOGIQUE DE NAVIGATION DE L'APPLICATION ---
 if role == "Admin":
     pages_dispos = ["📊 Dashboard & Projections", "🧮 Simulateur & Courbes", "📤 Importer les données", "👥 Liste des Équipes"]
 else:
@@ -177,9 +169,10 @@ page = st.sidebar.radio("Menu", pages_dispos)
 st.sidebar.markdown("---")
 st.sidebar.success(f"👤 **{user_nom}** ({role})")
 if st.sidebar.button("Se déconnecter", use_container_width=True):
-    st.session_state.clear()
-    st.rerun()
+    st.logout()
+    st.stop()
 
+# Calculs et filtrages des données
 if not df_historique.empty and "Objectif" in df_historique.columns:
     df_historique = df_historique.dropna(subset=['Période'])
     df_historique['Période'] = df_historique['Période'].astype(str).str.strip()
@@ -241,7 +234,6 @@ if page == "📊 Dashboard & Projections":
         
         st.write("---")
         st.markdown("### 🔍 Focus Analyse Individuelle")
-        
         if role == "Sales":
             sales_selectionne = user_nom 
         else:
@@ -338,16 +330,15 @@ elif page == "📤 Importer les données" and role == "Admin":
                 records.append({"Nom": str(row["Nom"]), "Période": p, "Objectif": float(row["Objectif"]), "Réalisation": float(row["Réalisation"])})
             except: continue
         
-        # --- BLOC D'INSERTION SÉCURISÉ CONTRE LES ERREURS AIRTABLE ---
         if records:
             try:
                 table_performances.batch_create(records)
                 st.cache_data.clear()
                 st.success(f"🎉 Import réussi ! {len(records)} lignes ajoutées.")
             except requests.exceptions.HTTPError as e:
-                st.error("❌ Airtable a refusé l'importation de ces données. Voici l'erreur technique :")
+                st.error("❌ Airtable a refusé l'importation. Détails :")
                 st.code(e.response.text)
 
 elif page == "👥 Liste des Équipes" and role == "Admin":
     st.title("👥 Référentiel Collaborateurs")
-    st.dataframe(df_collabs[['Nom', 'Prénom', 'Team', 'Manager', 'Courbe', 'Périodicité', 'Prime Target 100%', 'Email', 'Mot de passe']], use_container_width=True)
+    st.dataframe(df_collabs[['Nom', 'Prénom', 'Team', 'Manager', 'Courbe', 'Périodicité', 'Prime Target 100%', 'Email']], use_container_width=True)
