@@ -210,7 +210,7 @@ if page == "📊 Dashboard & Projections":
 
         st.write("---")
         st.markdown("### 🔍 Focus Analyse Individuelle & Méthodes de calcul")
-        # Sélection par Nom (trié), mais on pourrait ajouter le Matricule pour être encore plus précis
+        # Sélection par Nom (trié)
         sales_selectionne = st.selectbox("Sélectionner un collaborateur :", sorted(df_synthese['Nom'].unique()))
         df_sales = df_visu[df_visu['Nom'] == sales_selectionne].sort_values(by="Période")
 
@@ -245,9 +245,9 @@ if page == "📊 Dashboard & Projections":
         df_final = df_final.rename(columns={'Objectif': 'Cumul Objectifs (€)', 'Réalisation': 'Cumul Réalisations (€)'})
         formats = {col: ('{:,.2f} €' if 'Moyen' not in col else lambda x: f"{x*100:.1f} %") for col in df_final.columns if col not in cols_fixes}
         try:
-            st.dataframe(df_final.style.format(formats).background_gradient(cmap="Blues", subset=cols_metiers_totale), use_container_width=True)
+            st.dataframe(df_final.style.format(formats).background_gradient(cmap="Blues", subset=cols_metiers_totale), width="stretch")
         except:
-            st.dataframe(df_final.style.format(formats), use_container_width=True)
+            st.dataframe(df_final.style.format(formats), width="stretch")
 
 # --- PAGE 2 : SIMULATEUR INTERACTIF ---
 elif page == "🧮 Simulateur & Courbes":
@@ -337,5 +337,5 @@ elif page == "📤 Importer les données":
 # --- PAGE 4 : LISTE DES ÉQUIPES ---
 elif page == "👥 Liste des Équipes":
     st.title("👥 Référentiel Collaborateurs")
-    # Affichage du Matricule en première position pour vérifier que tout est propre
-    st.dataframe(df_collabs[['Matricule', 'Nom', 'Prénom', 'Team', 'Manager', 'Courbe', 'Périodicité', 'Prime Target 100%']].sort_values(by="Nom"), use_container_width=True)
+    # Affichage du Matricule en première position avec width="stretch"
+    st.dataframe(df_collabs[['Matricule', 'Nom', 'Prénom', 'Team', 'Manager', 'Courbe', 'Périodicité', 'Prime Target 100%']].sort_values(by="Nom"), width="stretch")
