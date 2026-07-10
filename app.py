@@ -184,4 +184,8 @@ if page == "📊 Dashboard & Projections":
         df_synthese["Atterrissage Décembre Estimé (€)"] = projections
         
         # BANDEAU KPIS GLOBAL
-        k1, k
+        # BANDEAU KPIS GLOBAL
+        k1, k2, k3 = st.columns(3)
+        k1.metric("Total Variables Générés YTD", f"{df_synthese['À Verser (€)'].sum():,.2f} €")
+        k2.metric("Atterrissage Budgétaire Annuel", f"{df_synthese['Atterrissage Décembre Estimé (€)'].sum():,.2f} €")
+        k3.metric("Ø Taux de Réalisation Équipe", f"{df_synthese['TR Moyen (%)'].mean() * 100:.1f} %")
