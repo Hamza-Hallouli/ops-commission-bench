@@ -98,11 +98,15 @@ def calculer_ligne(row):
     except:
         return 0.0, 0.0, 0.0
 
-# --- CHARGEMENT SÉCURISÉ DES DONNÉES ---
-@st.cache_data(ttl=2)
+# --- CHARGEMENT SÉCURISÉ DES DONNÉES (BLINDÉ & CACHE 24H) ---
+@st.cache_data(ttl=86400)
 def load_airtable_data():
-    df_c = pd.DataFrame([r["fields"] for r in table_collaborateurs.all()])
-    df_p = pd.DataFrame([r["fields"] for r in table_performances.all()])
+    try:
+        df_c = pd.DataFrame([r["fields"] for r in table_collaborateurs.all()])
+        df_p = pd.DataFrame([r["fields"] for r in table_performances.all()])
+    except Exception as e:
+        st.error("⚠️ Connexion à Airtable instable. Veuillez rafraîchir la page.")
+        return pd.DataFrame(), pd.DataFrame()
 
     if df_c.empty: return pd.DataFrame(), pd.DataFrame()
 
@@ -113,10 +117,16 @@ def load_airtable_data():
     if "Prime Target 100%" not in df_c.columns: df_c["Prime Target 100%"] = 0.0
     df_c["Prime Target 100%"] = df_c["Prime Target 100%"].fillna(0.0)
 
+    # Nettoyage strict des noms (Tout en majuscule, sans espaces)
+    df_c["Nom"] = df_c["Nom"].astype(str).str.strip().str.upper()
+
     if df_p.empty or "Nom" not in df_p.columns: return df_c, pd.DataFrame()
 
     for c in ["Prénom", "Courbe", "Périodicité", "Prime Target 100%", "Team", "Manager", "Matricule"]:
         if c in df_p.columns: df_p = df_p.drop(columns=[c])
+
+    # Nettoyage strict pour la table perf
+    df_p["Nom"] = df_p["Nom"].astype(str).str.strip().str.upper()
 
     df_global = pd.merge(df_p, df_c, on="Nom", how="left")
     return df_c, df_global
@@ -156,7 +166,7 @@ if page == "📊 Dashboard & Projections":
         if manager_filtre != "Tous": df_visu = df_visu[df_visu["Manager"] == manager_filtre]
 
     if df_visu.empty:
-        st.info("💡 Aucune donnée de performance enregistrée pour ces filtres. Utilisez l'onglet d'importation.")
+        st.info("💡 Aucune donnée de performance enregistrée pour ces filtres.")
     else:
         df_synthese = df_visu.groupby(['Nom', 'Prénom', 'Courbe', 'Périodicité', 'Prime Target 100%', 'Team', 'Manager']).agg({
             'À Verser (€)': 'sum', 'Objectif': 'sum', 'Réalisation': 'sum'
