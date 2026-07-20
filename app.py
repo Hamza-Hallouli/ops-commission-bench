@@ -29,6 +29,9 @@ def calcul_standard(tr):
 
 def calcul_manager(tr):
     if tr < 0.30: return 0.0
+    elif tr < 0.40: return tr * 0.20
+    elif tr < 0.45: return tr * 0.25
+    elif tr < 0.50: return tr * 0.30
     elif tr < 0.60: return tr * 0.40
     elif tr < 0.70: return tr * 0.45
     elif tr < 0.80: return tr * 0.55
@@ -87,7 +90,7 @@ def calculer_ligne(row):
 
         if courbe in ["standard", "standard curve"]: atteinte = calcul_standard(tr)
         elif courbe in ["manager", "plan sales manager"]: atteinte = calcul_manager(tr)
-        elif courbe in ["manager is"]: atteinte = calcul_manager_is(tr)
+        elif courbe in ["manager is", "courbe manager is"]: atteinte = calcul_manager_is(tr)
         elif courbe in ["is", "is curve", "inside sales", "standard is curve"]: atteinte = calcul_inside_sales(tr)
         else: atteinte = 0.0
 
@@ -286,7 +289,6 @@ elif page == "📤 Importer les données":
         periodicite = str(col["Périodicité"]).strip()
         periodes_target = ["Q1", "Q2", "Q3", "Q4"] if periodicite == "Trimestriel" else [str(i) for i in range(1, 13)]
         for p in periodes_target:
-            # On inclut le Matricule dans le template Excel !
             mask_rows.append({
                 "Matricule": col["Matricule"], 
                 "Nom": col["Nom"], 
@@ -337,5 +339,4 @@ elif page == "📤 Importer les données":
 # --- PAGE 4 : LISTE DES ÉQUIPES ---
 elif page == "👥 Liste des Équipes":
     st.title("👥 Référentiel Collaborateurs")
-    # Affichage du Matricule en première position avec width="stretch"
     st.dataframe(df_collabs[['Matricule', 'Nom', 'Prénom', 'Team', 'Manager', 'Courbe', 'Périodicité', 'Prime Target 100%']].sort_values(by="Nom"), width="stretch")
